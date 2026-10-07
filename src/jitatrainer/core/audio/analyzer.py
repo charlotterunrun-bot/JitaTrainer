@@ -28,6 +28,13 @@ class AnalyzerConfig:
     window: int = 2048
     hop: int = 480
     samplerate: int = 48000
+    #: 低频增强：低音弦的基频在短窗口下分辨率不足，YIN 会锁到二次谐波。
+    #: 实测（用户实录，2026-10-07）：2048 窗口把 E2 读成 D#3（157Hz），
+    #: 8192 窗口能正确读到 79.2Hz。因此对低频段启用一条更长的分析窗口。
+    low_enhance: bool = True
+    low_window: int = 8192
+    #: 低于该频率的检测结果会尝试用长窗口复核
+    low_band_hz: float = 220.0
 
     @property
     def hop_ms(self) -> float:
@@ -37,9 +44,18 @@ class AnalyzerConfig:
     def window_ms(self) -> float:
         return self.window / self.samplerate * 1000.0
 
+    @property
+    def low_window_ms(self) -> float:
+        return self.low_window / self.samplerate * 1000.0
+
+    @property
+    def required_samples(self) -> int:
+        """分析线程每次需要从环形缓冲取出的样本数。"""
+        return self.low_window if self.low_enhance else self.window
+
 
 class FrameAnalyzer:
-    """单帧处理：门限 → 起音 → YIN → PitchEvent。"""
+    """单帧处理：门限 → 起音 → YIN → （低频段）长窗口复核 → PitchEvent。"""
 
     def __init__(
         self,
@@ -53,6 +69,12 @@ class FrameAnalyzer:
             YinConfig(samplerate=self.config.samplerate, window=self.config.window)
         )
         self._onset = OnsetDetector(rise_db=self.gate.onset_rise_db)
+        #: 低频段复核用的长窗口检测器
+        self.low_detector: PitchDetector | None = None
+        if self.config.low_enhance and self.config.low_window > self.config.window:
+            self.low_detector = PitchDetector(
+                YinConfig(samplerate=self.config.samplerate, window=self.config.low_window)
+            )
         #: 整体检测偏差校正（音分）。由向导的试弹校准测得，用于补偿系统性偏差；
         #: 注意它**不**应用来掩盖琴本身没调准的问题。
         self.detune_cents: float = 0.0
@@ -68,30 +90,68 @@ class FrameAnalyzer:
     def set_detune_cents(self, cents: float) -> None:
         self.detune_cents = float(cents)
 
+    def _enhance_low(self, frame: np.ndarray, fast_hz: float, fast_confidence: float):
+        """低频段复核：用长窗口再测一次，若给出更低且仍然可靠的基频则采用。
+
+        低音弦的基频在短窗口下分辨不出，YIN 会锁到二次谐波（E2 → E3）。
+        长窗口能分辨出真实基频，因此当快路径结果落在低频段时再做一次。
+        """
+        if self.low_detector is None:
+            return None
+        if not (0.0 < fast_hz <= self.config.low_band_hz):
+            return None
+        if frame.size < self.config.low_window:
+            return None
+        long_frame = np.asarray(frame[-self.config.low_window :], dtype=np.float64)
+        result = self.low_detector.detect(long_frame)
+        if not result.valid:
+            return None
+        # 只接受"把八度/十二度拉回真实基频"的方向，且新结果必须落在低频段
+        if result.hz >= fast_hz or result.hz > self.config.low_band_hz:
+            return None
+        if result.confidence < fast_confidence - 0.15:
+            return None
+        return result
+
     def process(self, frame: np.ndarray, t: float) -> PitchEvent:
-        """处理一帧；返回 PitchEvent（静音帧的 hz 为 0）。"""
-        level = frame_rms_db(frame)
+        """处理一帧；返回 PitchEvent（静音帧的 hz 为 0）。
+
+        ``frame`` 可以是长于 ``config.window`` 的缓冲（分析线程会取
+        ``required_samples`` 个样本），快路径只用最后 ``window`` 个样本。
+        """
+        signal = np.asarray(frame, dtype=np.float64)
+        level = frame_rms_db(signal[-self.config.window :])
         is_onset = self._onset.update(level)
 
         if level < self.gate_db:
             # 低于门限：不做 YIN（省 CPU），也不允许被判定
             return PitchEvent(t=t, hz=0.0, confidence=0.0, rms_db=level, is_onset=is_onset)
 
-        result = self.detector.detect(np.asarray(frame, dtype=np.float64))
+        fast_frame = signal[-self.config.window :]
+        result = self.detector.detect(fast_frame)
+        corrected = False
         if not result.valid:
             return PitchEvent(t=t, hz=0.0, confidence=result.confidence, rms_db=level, is_onset=is_onset)
 
         hz = result.hz
+        confidence = result.confidence
+
+        enhanced = self._enhance_low(signal, hz, confidence)
+        if enhanced is not None:
+            hz = enhanced.hz
+            confidence = enhanced.confidence
+            corrected = True
+
         if self.detune_cents:
             hz = hz * (2.0 ** (-self.detune_cents / 1200.0))
 
         return PitchEvent(
             t=t,
             hz=hz,
-            confidence=result.confidence,
+            confidence=confidence,
             rms_db=level,
             is_onset=is_onset,
-            harmonic_corrected=result.harmonic_corrected,
+            harmonic_corrected=corrected or result.harmonic_corrected,
         )
 
 
@@ -120,7 +180,7 @@ class AnalyzerThread(threading.Thread):
 
     def tick(self) -> PitchEvent | None:
         """取一窗并处理一次；数据不足时返回 None。供测试直接调用。"""
-        frame = self.ring.read_latest(self.config.window)
+        frame = self.ring.read_latest(self.config.required_samples)
         if frame is None:
             self.dropped += 1
             return None

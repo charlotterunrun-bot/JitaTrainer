@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections import Counter, deque
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.theory.notes import midi_name
+from ...core.theory.notes import midi_name, midi_to_hz
 from ...core.theory.tuning import STANDARD, Tuning
 from ...data.settings import Settings
 from ..audio_bridge import build_session
@@ -24,6 +26,9 @@ from ..widgets.pitch_meter import PitchMeter
 
 POLL_MS = 40
 AUTO_INDEX = 0
+#: 显示平滑窗口的帧数。低音弦的基频可能弱于高次谐波，单帧会在八度之间抖动，
+#: 用最近若干帧的众数决定显示音名（实测低音弦约一半的帧能锁定真实基频）。
+SMOOTHING_FRAMES = 24
 
 
 class TunerPage(QWidget):
@@ -35,6 +40,7 @@ class TunerPage(QWidget):
         self.tr = tr
         self.tuning: Tuning = STANDARD
         self.session = None
+        self._recent: deque[tuple[int, float]] = deque(maxlen=SMOOTHING_FRAMES)
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
         self._timer.timeout.connect(self._poll)
@@ -119,6 +125,7 @@ class TunerPage(QWidget):
         if self.session is not None:
             self.session.stop()
             self.session = None
+        self._recent.clear()
         self.meter.clear()
         self.toggle_button.setText(self.tr("common.start"))
         self.status.setText(self.tr("practice.waiting"))
@@ -131,7 +138,13 @@ class TunerPage(QWidget):
         if not voiced:
             if events:
                 self.meter.set_pitch(None)
+                self._recent.clear()
             return
+
+        for event in voiced:
+            pc = event.pitch_class
+            if pc is not None:
+                self._recent.append((pc, event.midi))
 
         latest = voiced[-1]
         if self._selected_string() is None:
@@ -142,7 +155,19 @@ class TunerPage(QWidget):
                 f"{self.tr('tuner.string', n=string_no)} · {midi_name(target_midi)}",
                 self.settings.get_float("tolerance_cents", 25.0),
             )
-        self.meter.set_pitch(latest.hz, latest.confidence)
+
+        display_hz, confidence = self._smoothed_pitch(latest)
+        self.meter.set_pitch(display_hz, confidence)
+
+    def _smoothed_pitch(self, latest) -> tuple[float, float]:  # noqa: ANN001
+        """用最近若干帧的众数决定显示音名，减少八度跳动。"""
+        if not self._recent:
+            return latest.hz, latest.confidence
+        counts = Counter(pc for pc, _midi in self._recent)
+        mode_pc, _count = counts.most_common(1)[0]
+        midis = sorted(midi for pc, midi in self._recent if pc == mode_pc)
+        median_midi = midis[len(midis) // 2]
+        return midi_to_hz(median_midi), latest.confidence
 
     # ------------------------------------------------------------------ 生命周期
     def leave(self) -> None:
