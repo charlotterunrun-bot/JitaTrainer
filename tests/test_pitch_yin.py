@@ -110,7 +110,7 @@ class TestHarmonicCorrection:
             assert corrected == pytest.approx(f0)
 
     def test_full_pipeline_never_shifts_octave_down(self) -> None:
-        """整条检测链路：任何音都不允许被降到低八度。"""
+        """整条检测链路：正常合成音不允许被降到低八度。"""
         detector = PitchDetector()
         for name, midi in OPEN_STRINGS.items():
             f0 = midi_to_hz(midi)
@@ -118,10 +118,52 @@ class TestHarmonicCorrection:
             assert result.valid
             assert result.hz > f0 * 0.95, f"{name} 被降到低八度: {result.hz:.2f} vs {f0:.2f}"
 
-    def test_skips_check_for_low_frequencies(self) -> None:
+    def test_skips_check_for_very_low_frequencies(self) -> None:
+        """低于 60Hz 的候选不再下探（已经超出吉他音域）。"""
         frame = frame_of(midi_to_hz(40))
-        _, changed = harmonic_correct(frame, SAMPLERATE, midi_to_hz(40), min_check_hz=200.0)
+        _, changed = harmonic_correct(frame, SAMPLERATE, 55.0)
         assert not changed
+
+    def test_corrects_octave_up_when_fundamental_is_weak(self) -> None:
+        """真实录音暴露的场景：基频很弱、偶次谐波主导时，YIN 会锁到高八度。
+
+        这里直接对校正函数做单元测试：给定"检测值是真实基频的两倍"，
+        且 f0/2 处存在（较弱的）谱峰，必须向下修正一个八度。
+        """
+        f0 = midi_to_hz(40)  # E2 = 82.41Hz
+        frame = _synth_weak_fundamental(f0, fundamental_gain=0.02)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 2)
+        assert changed, "弱基频场景未被修正（低音弦会报高八度）"
+        assert corrected == pytest.approx(f0, rel=0.02)
+
+    def test_does_not_correct_when_subharmonic_absent(self) -> None:
+        """没有低八度成分时不得乱改（防止把正确的高音拉低）。"""
+        f0 = midi_to_hz(50)  # D3
+        frame = frame_of(f0)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0)
+        assert not changed
+        assert corrected == pytest.approx(f0)
+
+    def test_low_rule_only_applies_to_low_band(self) -> None:
+        """高频区仍走保守规则：f0/2 必须显著更强才修正。"""
+        f0 = midi_to_hz(76)  # E5
+        frame = _synth_weak_fundamental(f0, fundamental_gain=0.02)
+        # 高频段（>420Hz）不启用"存在性"判据，因此不应因为弱基频就向下修正
+        _, changed = harmonic_correct(frame, SAMPLERATE, f0)
+        assert not changed
+
+
+def _synth_weak_fundamental(f0: float, *, fundamental_gain: float = 0.02, duration: float = 1.0) -> np.ndarray:
+    """合成"基频很弱、偶次谐波主导"的音（模拟内置麦克风低频衰减）。"""
+    t = np.arange(int(SAMPLERATE * duration)) / SAMPLERATE
+    signal = fundamental_gain * np.sin(2 * np.pi * f0 * t)
+    for n, amplitude in ((2, 1.0), (4, 0.5), (6, 0.3), (8, 0.15)):
+        freq = f0 * n
+        if freq < SAMPLERATE / 2:
+            signal += amplitude * np.sin(2 * np.pi * freq * t)
+    signal /= np.max(np.abs(signal)) + 1e-12
+    start = int(0.15 * SAMPLERATE)
+    return signal[start : start + 2048].astype(np.float64)
 
 
 class TestRejection:

@@ -146,36 +146,87 @@ def harmonic_correct(
     *,
     min_check_hz: float = 200.0,
     min_bin_sep: float = 4.0,
+    low_max_hz: float = 420.0,
+    low_presence_ratio: float = 0.02,
+    low_floor_factor: float = 3.0,
+    min_low_hz: float = 60.0,
 ) -> tuple[float, bool]:
-    """保守型谐波校验：抑制"把二次谐波当作基频"的八度升高误判。
+    """谐波校验：抑制八度误判。
 
-    三重保险，任一不满足即跳过校验：
-      1. f0 低于 min_check_hz（低频区分辨率不足，直接信任 YIN）；
-      2. f0/2 与 f0 的间隔不足 min_bin_sep 个频点（无法分辨）；
-      3. f0/2 处不存在局部谱峰，或其幅度不显著高于 f0 处谱峰。
+    这里处理两类方向相反的误判，规则分开、互不干扰：
+
+    **A. 低频区的"高八度锁定"（真实录音实测发现）**
+
+    内置麦克风对 60–150Hz 响应差时，低音弦的基频会被压得很弱——实测第 6 弦
+    基频 76Hz 的幅度只有二次谐波 155Hz 的 **1/18**，YIN 于是锁到高八度。
+    此时频谱里 f0/2 处**确实有峰**（只是弱），因此判据是"存在性"而不是"更强"：
+
+      - 仅当 f0 <= low_max_hz（低音/中音弦区）时启用；
+      - f0/2 必须仍在吉他音域内（>= min_low_hz）；
+      - f0/2 处存在局部谱峰，且其幅度 > low_presence_ratio × f0 处幅度，
+        同时显著高于 60–1200Hz 频带的中位幅度（排除噪声里的偶发隆起）。
+
+    **B. 高频区的"把二次谐波当基频"**
+
+    这里反而要**保守**：第一版规则用"频带能量 > 50%"判断，在 63 个样本里
+    误伤 14 次（短窗口下基频主瓣泄漏被当成低八度成分，把正确的音改错）。
+    修正后要求 f0 与 f0/2 在频谱上真的分得开（至少 min_bin_sep 个频点），
+    并要求 f0/2 处的局部谱峰显著强于 f0（> 1.2 倍）。
 
     Returns:
         (修正后的频率, 是否发生修正)
     """
-    if hz <= 0 or hz < min_check_hz:
+    if hz <= 0:
         return hz, False
 
-    n = 1 << int(math.ceil(math.log2(len(frame))))
+    # 补零到 4 倍窗口：不增加真实分辨率，但让谱峰定位精确得多
+    n = 1 << int(math.ceil(math.log2(max(len(frame), 1) * 4)))
     bin_hz = samplerate / n
-    if (hz / 2.0) / bin_hz < min_bin_sep:
-        return hz, False
-
     spectrum = np.abs(np.fft.rfft(frame * np.hanning(len(frame)), n))
 
-    def peak_at(freq: float) -> float:
-        idx = int(round(freq / bin_hz))
-        lo, hi = max(1, idx - 2), min(len(spectrum) - 1, idx + 3)
+    def peak_at(freq: float, tol_ratio: float = 0.05) -> float:
+        """freq 附近 ±tol 范围内的局部谱峰幅度；没有局部峰则返回 0。"""
+        if freq <= 0:
+            return 0.0
+        half_width = max(1, int(round(freq * tol_ratio / bin_hz)))
+        center = int(round(freq / bin_hz))
+        lo = max(1, center - half_width)
+        hi = min(len(spectrum) - 1, center + half_width + 1)
         if hi <= lo:
             return 0.0
         local = int(np.argmax(spectrum[lo:hi])) + lo
         if not (spectrum[local] > spectrum[local - 1] and spectrum[local] >= spectrum[local + 1]):
             return 0.0
         return float(spectrum[local])
+
+    # ---------------- A. 低频区：修正高八度锁定 ----------------
+    if hz <= low_max_hz:
+        half = hz / 2.0
+        if half < min_low_hz:
+            return hz, False
+        energy_half = peak_at(half)
+        if energy_half <= 0.0:
+            return hz, False
+        energy_here = peak_at(hz)
+
+        band = spectrum[
+            max(1, int(60 / bin_hz)) : min(len(spectrum), int(1200 / bin_hz))
+        ]
+        band_median = float(np.median(band)) if band.size else 0.0
+
+        if (
+            energy_here > 0.0
+            and energy_half > low_presence_ratio * energy_here
+            and energy_half > low_floor_factor * band_median
+        ):
+            return half, True
+        return hz, False
+
+    # ---------------- B. 高频区：保守的向下修正 ----------------
+    if hz < min_check_hz:
+        return hz, False
+    if (hz / 2.0) / bin_hz < min_bin_sep:
+        return hz, False
 
     energy_here = peak_at(hz)
     energy_lower = peak_at(hz / 2.0)
