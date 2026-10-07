@@ -4,7 +4,8 @@
 
 **English**: JitaTrainer is a Windows desktop ear-and-fretboard trainer for guitar. It shows a note in guitar TAB, listens through your microphone, judges whether the note you played is correct, then moves on — while scheduling reviews of your weak notes with a spaced-repetition model.
 
-**当前状态**：需求阶段完成（需求文档 v1.0 已审核通过），即将进入 M0 技术方案与 M1 地基开发。
+**当前状态**：M0 技术方案已评审通过；**M1 地基实现完成**，自动化验证通过（144 项测试 + 打包产物自检）；
+M1 的实机验收待更换麦克风后进行。**恢复工作前请先读** [交接说明](docs/开发记录/交接说明-2026-10-07-M1暂停.md)。
 
 ---
 
@@ -56,10 +57,23 @@
 
 ## 文档
 
-- 需求文档（PRD）：[docs/需求文档.md](docs/需求文档.md) — v1.0，已审核通过
+- 需求文档（PRD）：[docs/需求文档.md](docs/需求文档.md) — v1.1，已审核通过
 - 技术方案：M0 技术方案 → [docs/技术方案.md](docs/技术方案.md)
+- **交接说明**：[docs/开发记录/交接说明-2026-10-07-M1暂停.md](docs/开发记录/交接说明-2026-10-07-M1暂停.md) — 恢复工作前必读
 - 对话记录归档：[docs/对话记录/](docs/对话记录/) — 人机问答与决策溯源（脱敏）
 - 开发记录：[docs/开发记录/](docs/开发记录/) — 每个里程碑的过程档案
+
+## 工具一览
+
+| 工具 | 用途 |
+|---|---|
+| `python tools/doctor.py --audio --tests` | **环境自检**：依赖、临时目录、运行期目录、git、音频设备，可选跑测试 |
+| `python tools/mic_check.py --list` | 麦克风实时电平条与可用性判定（录音前先验证设备） |
+| `python tools/analyze_recording.py <文件> --order 6,5,4,3,2,1` | 录音逐弦分析 + 低频响应诊断（支持 m4a/mp3/wav） |
+| `python tools/capture_fixture.py --analyze x.wav --segments` | 录音分段识别与回归固件生成 |
+| `python tools/pitch_bench.py` | 音高算法基准（窗口 × 噪声 × 精度 × 判定路径） |
+| `python tools/build.py --clean` | 打包绿色版并自动运行产物自检 |
+| `python tools/sync_github.py push` | 同步到 GitHub（自动探测代理） |
 
 ## 已验证的技术指标（M0 实测）
 
