@@ -9,6 +9,9 @@
 *.local.json
 *.local.toml
 
+# --- 工作区内的依赖目录（本机 pip 不可用，依赖以解包 wheel 方式放在这里） ---
+.vendor/
+
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -26,16 +29,18 @@ env/
 coverage.xml
 htmlcov/
 
-# --- 构建产物 ---
-build/
-dist/
-release/
+# --- 构建产物（锚定根目录，避免误伤 src/ 下的同名目录） ---
+/build/
+/dist/
+/release/
+JitaTrainer.spec
 *.spec.bak
 *.manifest
 
 # --- 运行期数据（绿色版数据目录，绝不入库） ---
-data/
-logs/
+# 注意：必须以 / 锚定根目录，否则会连 src/jitatrainer/data/ 源码一起忽略
+/data/
+/logs/
 **/jitatrainer.db
 **/jitatrainer.db-wal
 **/jitatrainer.db-shm

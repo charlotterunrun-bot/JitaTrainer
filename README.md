@@ -77,17 +77,35 @@
 
 ```powershell
 # 依赖（开发期需要联网一次；运行时完全离线）
-python -m pip install PySide6 sounddevice numpy scipy pyinstaller pytest
+python -m pip install PySide6 sounddevice numpy pyinstaller pytest
 
 # 运行（开发模式）
-python -m src.jitatrainer.app
+python run.py
+
+# 离屏自检（验证数据库、语言包、音频设备枚举）
+python run.py --selftest
 
 # 测试
 python -m pytest
 
-# 构建绿色版
-python tools/build.py
+# 构建绿色版（自动运行产物自检）
+python tools/build.py --clean
 ```
+
+### 本机环境的两个坑（已内置兼容处理）
+
+1. **pip 不可用**：本机 Windows 权限模型下，`os.mkdir(path, 0o700)` 与
+   `tempfile.mkdtemp()` 创建的目录 ACL 损坏、无法读写（`icacls` 也无法处理），
+   而 pip 内部正是用 `mkdtemp` 解包，因此必然失败。
+   因此依赖改为**解包官方 wheel 到 `.vendor/`**（已被 `.gitignore` 排除），
+   `run.py` 与 `conftest.py` 会把 `.vendor` 与 `src` 加入 `sys.path`。
+2. **pytest 临时目录**：pytest 自带 basetemp 机制同样会创建 0o700 目录并在
+   会话结束时对其清理，在本机会导致整个测试会话崩溃。
+   已在 `conftest.py` 中接管 `tmp_path` 夹具，把临时目录固定在工作区内的
+   `.tmp/tests/`，完全绕开 pytest 的临时目录回收逻辑。
+
+`src/jitatrainer/compat.py` 在运行期自动探测并修补 `tempfile.mkdtemp`，
+使第三方库（含 PyInstaller）也能正常工作。
 
 ## 仓库同步
 

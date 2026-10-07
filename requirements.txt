@@ -1,0 +1,10 @@
+# JitaTrainer 运行期依赖
+# 注意：本机 pip 不可用（沙箱下 tempfile.mkdtemp 创建目录不可写），
+# 依赖以解包 wheel 的方式安装到 .vendor/，详见 docs/技术方案.md 与 README。
+PySide6>=6.6
+numpy>=1.26
+sounddevice>=0.4.6
+
+# 开发期依赖
+pytest>=8.0
+pyinstaller>=6.0
