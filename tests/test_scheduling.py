@@ -445,6 +445,103 @@ class TestSchedulerResults:
         assert scheduler.stats.count("new") == 5
 
 
+class TestCrossDayReview:
+    """端到端：今天练过的题，明天/后天真的会作为"到期复习"排进来。
+
+    这是记忆曲线最核心的承诺，必须能被验证，而不只是"公式看起来对"。
+    """
+
+    def test_answered_items_come_back_as_review_next_day(self) -> None:
+        # 第一天：12 个音全部答对一次
+        day1 = NOW
+        scheduler = make_scheduler(now=day1, seed=21)
+        answered: list[str] = []
+        for _ in range(12):
+            decision = scheduler.next_decision()
+            scheduler.on_result(decision, correct=True, rt_ms=1200)
+            answered.append(decision.item_key)
+
+        assert len(set(answered)) == 12
+        for key in answered:
+            state = scheduler.state_of(key)
+            assert state is not None
+            assert state.interval_index == 1
+            assert state.due_at == day1 + timedelta(days=INTERVALS_DAYS[1])
+
+        # 同一天再练：没有到期项，应全部是新题（已练过的 12 个都不到期）
+        same_day = make_scheduler(states=dict(scheduler.states), now=day1, seed=22)
+        assert same_day.due_items() == []
+
+        # 第二天：全部到期；此时没有新题也没有薄弱项，
+        # 配额顺延给到期复习（需求 FR-710 的"某类无可用项时配额顺延"）
+        day2 = day1 + timedelta(days=1, hours=1)
+        later = make_scheduler(states=dict(scheduler.states), now=day2, seed=23)
+        assert len(later.due_items()) == 12
+
+        sources = [later.next_decision().source for _ in range(10)]
+        assert set(sources) == {"review"}, "只有到期项时应全部出复习题（否则无题可出）"
+
+    def test_review_quota_respected_when_new_items_available(self) -> None:
+        """有到期项也有新题时，配额才真正生效：每 10 题最多 4 题复习。"""
+        day1 = NOW
+        scheduler = make_scheduler(now=day1, seed=24)
+        # 只练 6 个音 → 另外 6 个仍是新题
+        for _ in range(6):
+            decision = scheduler.next_decision()
+            scheduler.on_result(decision, correct=True, rt_ms=1200)
+
+        day2 = day1 + timedelta(days=1, hours=1)
+        later = make_scheduler(states=dict(scheduler.states), now=day2, seed=25)
+        assert len(later.due_items()) == 6
+        assert len(later.new_items()) == 6
+
+        sources = [later.next_decision().source for _ in range(10)]
+        assert sources.count("review") == 4, "到期复习占满配额 4 题"
+        assert sources.count("new") == 6, "其余配额顺延给新题"
+
+    def test_overdue_items_sorted_by_lateness(self) -> None:
+        day1 = NOW
+        scheduler = make_scheduler(now=day1, seed=31)
+        decisions = [scheduler.next_decision() for _ in range(3)]
+        for index, decision in enumerate(decisions):
+            scheduler.on_result(decision, correct=True, rt_ms=1000)
+            # 把三个训练项伪造成不同逾期天数
+            state = scheduler.states[decision.item_key]
+            from dataclasses import replace
+
+            scheduler.states[decision.item_key] = replace(
+                state, due_at=day1 - timedelta(days=(index + 1) * 3)
+            )
+
+        later = make_scheduler(states=dict(scheduler.states), now=day1, seed=32)
+        order = [later.next_decision().pitch_class for _ in range(3)]
+        # 逾期最久的那个（index=2）应该最先出
+        assert order[0] == decisions[2].pitch_class
+
+    def test_interval_grows_across_days(self) -> None:
+        """连续几天都答对：间隔应按 1 → 3 → 7 天增长。"""
+        key = key_of(4)
+        states: dict[str, ItemState] = {}
+        moment = NOW
+        for days in (1, 3, 7):
+            # 用"只有一个音"的题库，确保每轮出的都是它
+            scheduler = QuestionScheduler(
+                level_id="L2",
+                pitch_classes=[4],
+                item_key_of=key_of,
+                states=dict(states),
+                rng=random.Random(41),
+                clock=lambda m=moment: m,
+            )
+            decision = scheduler.next_decision()
+            assert decision.item_key == key
+            scheduler.on_result(decision, correct=True, rt_ms=1000)
+            states = dict(scheduler.states)
+            assert states[key].interval_days == days
+            assert states[key].due_at is not None
+            moment = states[key].due_at  # 到期日再练
+
+
 class TestAdvice:
     def _records(self, count: int, accuracy: float, rt: int | None, asked: int = 25) -> list[SessionRecord]:
         return [SessionRecord(asked=asked, accuracy_first=accuracy, avg_rt_ms=rt) for _ in range(count)]
