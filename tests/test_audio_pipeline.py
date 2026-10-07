@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jitatrainer.core.audio.analyzer import AnalyzerConfig, FrameAnalyzer
+from jitatrainer.core.audio.analyzer import AnalyzerConfig, AnalyzerThread, FrameAnalyzer
 from jitatrainer.core.audio.gate import (
     SILENCE_DB,
     GateConfig,
@@ -19,6 +19,7 @@ from jitatrainer.core.audio.gate import (
     frame_rms_db,
     summarize_capture,
 )
+from jitatrainer.core.audio.ring import RingBuffer
 from jitatrainer.core.audio.session import AudioSession
 from jitatrainer.core.theory.notes import midi_to_hz
 from jitatrainer.core.theory.tuning import STANDARD
@@ -180,6 +181,98 @@ class TestAudioSession:
         # 本机有 sounddevice，因此这里应当成功；若失败也必须抛异常
         assert session.capture.is_running
         session.capture.stop()
+
+
+class TestAudioThreadLifecycle:
+    """回归：真实麦克风路径曾经完全起不来。
+
+    两个缺陷都被漏掉了，因为原有测试直接用 ``FrameAnalyzer``，从不构造后台线程：
+
+    1. ``AnalyzerThread`` 是 dataclass，默认生成 ``__eq__`` 使实例**不可哈希**，
+       而 ``threading.Thread`` 会把自己放进 WeakSet → 构造即抛
+       ``TypeError: unhashable type: 'AnalyzerThread'``。
+    2. dataclass 字段 ``_stop`` **遮蔽了 Thread 内部的 ``_stop()`` 方法**，
+       于是 ``join()`` 抛 ``TypeError: 'Event' object is not callable``。
+
+    合起来就是：插上麦克风一启动就崩，停止也崩。
+    """
+
+    def test_analyzer_thread_is_hashable(self) -> None:
+        ring = RingBuffer(capacity=48000, channels=1)
+        thread = AnalyzerThread(ring, FrameAnalyzer(AnalyzerConfig()), lambda _event: None)
+        assert hash(thread) is not None, "Thread 子类必须可哈希"
+
+    def test_analyzer_thread_start_process_stop_join(self) -> None:
+        import time
+
+        sample_rate = 48000
+        ring = RingBuffer(capacity=sample_rate * 2, channels=1)
+        events: list = []
+        thread = AnalyzerThread(ring, FrameAnalyzer(AnalyzerConfig()), events.append)
+
+        thread.start()
+        try:
+            wave = np.sin(2 * np.pi * 196.0 * np.arange(sample_rate // 2) / sample_rate) * 0.3
+            ring.write(wave.astype(np.float32))
+            deadline = time.monotonic() + 3.0
+            while not events and time.monotonic() < deadline:
+                time.sleep(0.05)
+        finally:
+            thread.stop()
+            thread.join(timeout=2.0)
+
+        assert not thread.is_alive(), "线程必须能干净退出"
+        assert events, "应检测到事件"
+        assert events[0].hz == pytest.approx(196.0, rel=0.02)
+        assert thread.processed > 0
+
+    def test_audio_session_start_and_stop(self) -> None:
+        """用假采集设备跑通 AudioSession 的启动/停止（不碰真实麦克风）。"""
+        import time
+
+        class FakeCapture:
+            def __init__(self) -> None:
+                self.started = False
+                self.stopped = False
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        session = AudioSession(samplerate=48000)
+        fake = FakeCapture()
+        session.capture = fake  # type: ignore[assignment]
+
+        session.start()
+        assert fake.started
+        assert session.is_running
+
+        wave = np.sin(2 * np.pi * 196.0 * np.arange(24000) / 48000) * 0.3
+        session.ring.write(wave.astype(np.float32))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if session.poll():
+                break
+            time.sleep(0.05)
+
+        session.stop()
+        assert fake.stopped
+        assert not session.is_running
+
+    def test_audio_session_stop_is_idempotent(self) -> None:
+        class FakeCapture:
+            def start(self) -> None: ...
+
+            def stop(self) -> None: ...
+
+        session = AudioSession(samplerate=48000)
+        session.capture = FakeCapture()  # type: ignore[assignment]
+        session.start()
+        session.stop()
+        session.stop()  # 不应抛异常
+        assert not session.is_running
 
 
 class TestSettings:

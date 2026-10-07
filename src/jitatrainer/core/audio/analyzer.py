@@ -155,15 +155,22 @@ class FrameAnalyzer:
         )
 
 
-@dataclass
+@dataclass(eq=False)
 class AnalyzerThread(threading.Thread):
-    """从环形缓冲按帧移取窗并分析的后台线程。"""
+    """从环形缓冲按帧移取窗并分析的后台线程。
+
+    注意 ``eq=False``：``threading.Thread`` 会把自己放进一个 WeakSet，
+    要求实例**可哈希**；而 dataclass 默认生成 ``__eq__`` 并把 ``__hash__`` 置为 None，
+    于是 ``AudioSession.start()`` 一构造它就抛
+    ``TypeError: unhashable type: 'AnalyzerThread'``——
+    也就是说真实麦克风路径完全起不来（单元测试用的是 FrameAnalyzer，所以没被发现）。
+    """
 
     ring: RingBuffer
     analyzer: FrameAnalyzer
     on_event: Callable[[PitchEvent], None]
     config: AnalyzerConfig = field(default_factory=AnalyzerConfig)
-    _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _t0: float | None = field(default=None, repr=False)
     processed: int = 0
     dropped: int = 0
@@ -172,11 +179,11 @@ class AnalyzerThread(threading.Thread):
         super().__init__(name="JitaAnalyzer", daemon=True)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     @property
     def stopped(self) -> bool:
-        return self._stop.is_set()
+        return self._stop_event.is_set()
 
     def tick(self) -> PitchEvent | None:
         """取一窗并处理一次；数据不足时返回 None。供测试直接调用。"""
@@ -194,7 +201,7 @@ class AnalyzerThread(threading.Thread):
     def run(self) -> None:  # pragma: no cover - 线程循环，由集成测试覆盖
         interval = self.config.hop_ms / 1000.0
         next_at = time.monotonic()
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             event = self.tick()
             if event is not None:
                 try:

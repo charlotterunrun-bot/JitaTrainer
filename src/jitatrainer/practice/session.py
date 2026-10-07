@@ -98,7 +98,10 @@ class SessionStats:
     combo: int = 0
     best_combo: int = 0
     score: int = 0
-    reaction_times: list[int] = field(default_factory=list)
+    #: 反应时间用"累加 + 计数"而不是列表：列表会随题量无限增长，
+    #: 而需求 NFR-06 明确要求长时间练习内存不得持续增长（平均值用这两个数就能算）。
+    rt_sum_ms: int = 0
+    rt_count: int = 0
     wrong_by_item: Counter = field(default_factory=Counter)
 
     @property
@@ -116,9 +119,13 @@ class SessionStats:
 
     @property
     def avg_rt_ms(self) -> int | None:
-        if not self.reaction_times:
+        if not self.rt_count:
             return None
-        return int(sum(self.reaction_times) / len(self.reaction_times))
+        return int(self.rt_sum_ms / self.rt_count)
+
+    def add_reaction_time(self, rt_ms: int) -> None:
+        self.rt_sum_ms += int(rt_ms)
+        self.rt_count += 1
 
     def weakest_items(self, limit: int = 3) -> list[tuple[str, int]]:
         return self.wrong_by_item.most_common(limit)
@@ -414,7 +421,7 @@ class PracticeSession:
         if not self._first_attempt_used:
             self.stats.correct_first += 1
             if outcome.elapsed_ms:
-                self.stats.reaction_times.append(int(outcome.elapsed_ms))
+                self.stats.add_reaction_time(int(outcome.elapsed_ms))
         self.stats.combo += 1
         self.stats.best_combo = max(self.stats.best_combo, self.stats.combo)
         if self.config.scoring_enabled:

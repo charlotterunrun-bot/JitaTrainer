@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
-from PySide6.QtWidgets import QMainWindow, QStackedWidget, QWidget
+from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox, QStackedWidget, QWidget
 
 from .. import __version__
+from .. import paths
 from ..core.audio import device as device_mod
-from ..data.db import Database
+from ..data.db import Database, utc_now_iso
 from ..data.settings import Settings
 from ..i18n import LANGUAGE_LABELS, Translator
 from ..practice.session import (
@@ -104,9 +106,174 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         wizard_action = menu.addAction(self.tr("wizard.title"))
         wizard_action.triggered.connect(self.open_wizard)
+
+        # 数据菜单（需求 FR-1000：打开数据目录 / 立即备份 / 导入导出）
+        data_menu = self.menuBar().addMenu(self.tr("settings.data_menu"))
+        open_dir = data_menu.addAction(self.tr("settings.open_data_dir"))
+        open_dir.triggered.connect(self.open_data_directory)
+        backup_action = data_menu.addAction(self.tr("settings.backup_now"))
+        backup_action.triggered.connect(self.backup_now)
+        data_menu.addSeparator()
+        export_action = data_menu.addAction(self.tr("settings.export"))
+        export_action.triggered.connect(self.export_profile)
+        import_action = data_menu.addAction(self.tr("settings.import"))
+        import_action.triggered.connect(self.import_profile)
+        data_menu.addSeparator()
+        clear_action = data_menu.addAction(self.tr("settings.clear_stats"))
+        clear_action.triggered.connect(self.clear_stats)
+
         menu.addSeparator()
         quit_action = menu.addAction(self.tr("common.close"))
         quit_action.triggered.connect(self.close)
+
+    # ------------------------------------------------------------------ 数据
+    def open_data_directory(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        target = paths.data_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+        self.statusBar().showMessage(str(target))
+
+    def backup_now(self) -> None:
+        from ..data.db import backup_database
+
+        try:
+            target = backup_database(reason="manual")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, self.tr("settings.data_menu"), f"{type(exc).__name__}: {exc}")
+            return
+        if target is None:
+            QMessageBox.information(self, self.tr("settings.data_menu"), self.tr("settings.backup_none"))
+            return
+        self.statusBar().showMessage(self.tr("settings.backup_done", name=target.name))
+
+    def export_profile(self) -> None:
+        from ..data.profile_io import export_profile, suggest_export_name
+
+        target, _selected = QFileDialog.getSaveFileName(
+            self,
+            self.tr("settings.export"),
+            str(paths.exports_dir() / suggest_export_name(self.profile_name)),
+            "JSON (*.json)",
+        )
+        if not target:
+            return
+        try:
+            summary = export_profile(self.settings.db, self.profile_id or 1, target)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, self.tr("settings.export"), f"{type(exc).__name__}: {exc}")
+            return
+        QMessageBox.information(
+            self,
+            self.tr("settings.export"),
+            self.tr("settings.export_done", detail=summary.describe(), path=summary.path.name),
+        )
+
+    def import_profile(self) -> None:
+        from ..data.db import backup_database
+        from ..data.profile_io import ProfileFormatError, import_profile, read_profile_file
+
+        source, _selected = QFileDialog.getOpenFileName(
+            self, self.tr("settings.import"), str(paths.exports_dir()), "JSON (*.json)"
+        )
+        if not source:
+            return
+        try:
+            payload = read_profile_file(source)
+        except ProfileFormatError as exc:
+            QMessageBox.warning(self, self.tr("settings.import"), str(exc))
+            return
+
+        name = str((payload.get("profile") or {}).get("name") or "?")
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("settings.import"))
+        box.setText(self.tr("settings.import_confirm", name=name))
+        new_button = box.addButton(self.tr("settings.import_mode_new"), QMessageBox.ButtonRole.AcceptRole)
+        overwrite_button = box.addButton(
+            self.tr("settings.import_mode_overwrite"), QMessageBox.ButtonRole.DestructiveRole
+        )
+        box.addButton(self.tr("common.cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (new_button, overwrite_button):
+            return
+
+        mode = "new" if clicked is new_button else "overwrite"
+        # 导入前先备份，覆盖导入尤其需要（需求 FR-1000）
+        try:
+            backup_database(reason="import")
+        except Exception:  # noqa: BLE001 - 备份失败不阻塞导入，但会记日志
+            logging.getLogger(__name__).exception("导入前备份失败")
+        try:
+            summary = import_profile(
+                self.settings.db, source, mode=mode, target_profile_id=self.profile_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, self.tr("settings.import"), f"{type(exc).__name__}: {exc}")
+            return
+
+        QMessageBox.information(
+            self,
+            self.tr("settings.import"),
+            self.tr(
+                "settings.import_done",
+                name=summary.profile_name,
+                items=summary.items,
+                sessions=summary.sessions,
+                attempts=summary.attempts,
+            ),
+        )
+        self.switch_profile(summary.profile_id)
+
+    def clear_stats(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            self.tr("settings.clear_stats"),
+            self.tr("settings.clear_confirm", name=self.profile_name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        from ..data.db import backup_database
+
+        try:
+            backup_database(reason="clear")
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("清空前备份失败")
+
+        profile_id = self.profile_id or 1
+        with self.settings.db.connect() as conn:
+            conn.execute(
+                "DELETE FROM attempts WHERE session_id IN "
+                "(SELECT id FROM sessions WHERE profile_id = ?)",
+                (profile_id,),
+            )
+            conn.execute("DELETE FROM sessions WHERE profile_id = ?", (profile_id,))
+            conn.execute("DELETE FROM items WHERE profile_id = ?", (profile_id,))
+            conn.commit()
+        self.show_home()
+        self.statusBar().showMessage(self.tr("settings.clear_done"))
+
+    def switch_profile(self, profile_id: int) -> None:
+        """切换当前档案（导入后使用）。"""
+        self.profile_id = profile_id
+        with self.settings.db.connect() as conn:
+            conn.execute(
+                "UPDATE profiles SET last_used_at = ? WHERE id = ?",
+                (utc_now_iso(), profile_id),
+            )
+            conn.commit()
+            row = conn.execute("SELECT name FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+        self.profile_name = str(row["name"]) if row else self.profile_name
+        self.settings.profile_id = profile_id
+        self.home.profile_name = self.profile_name
+        self.stats_page.profile_id = profile_id
+        self.stats_page.repository.profile_id = profile_id
+        self.show_home()
 
     # ------------------------------------------------------------------ 页面
     def show_home(self) -> None:

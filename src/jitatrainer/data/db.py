@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -212,10 +211,18 @@ def backup_database(
     db_file: Path | str | None = None,
     backup_dir: Path | str | None = None,
     keep: int = 10,
+    *,
+    reason: str = "manual",
+    now: datetime | None = None,
 ) -> Path | None:
     """备份数据库，保留最近 ``keep`` 份。数据库不存在时返回 None。
 
-    文件名带毫秒并用序号兜底，避免同一秒内多次备份互相覆盖。
+    **用 SQLite 的在线备份 API，而不是拷贝文件**：数据库开了 WAL，
+    未 checkpoint 的事务还在 ``-wal`` 文件里，直接拷主库会丢掉最近的记录
+    （练习刚结束就自动备份，恰好是最需要保住的那些数据）。
+    在线备份会产出一致快照，且可以和写入并发进行。
+
+    文件名带毫秒与原因标记，同一秒内多次备份也不会互相覆盖。
     """
     source = Path(db_file) if db_file is not None else default_db_path()
     if not source.exists():
@@ -224,28 +231,56 @@ def backup_database(
     target_dir = Path(backup_dir) if backup_dir is not None else default_backups_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now()
-    stamp = f"{now:%Y%m%d-%H%M%S}-{now.microsecond // 1000:03d}"
-    target = target_dir / f"jitatrainer-{stamp}.db"
+    moment = now or datetime.now()
+    stamp = f"{moment:%Y%m%d-%H%M%S}-{moment.microsecond // 1000:03d}"
+    tag = "".join(ch for ch in reason if ch.isascii() and (ch.isalnum() or ch in "-_")) or "manual"
+    target = target_dir / f"jitatrainer-{stamp}-{tag}.db"
     counter = 1
     while target.exists():
-        target = target_dir / f"jitatrainer-{stamp}-{counter}.db"
+        target = target_dir / f"jitatrainer-{stamp}-{tag}-{counter}.db"
         counter += 1
 
-    shutil.copy2(source, target)
+    origin = sqlite3.connect(str(source))
+    try:
+        snapshot = sqlite3.connect(str(target))
+        try:
+            origin.backup(snapshot)
+        finally:
+            snapshot.close()
+    finally:
+        origin.close()
 
-    existing = sorted(target_dir.glob("jitatrainer-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for stale in existing[keep:]:
+    _prune_backups(target_dir, keep)
+    return target
+
+
+def _prune_backups(directory: Path, keep: int) -> list[Path]:
+    """删除超出保留份数的旧备份，返回被删除的文件。"""
+    existing = sorted(
+        directory.glob("jitatrainer-*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    removed: list[Path] = []
+    for stale in existing[max(0, keep) :]:
         try:
             stale.unlink()
+            removed.append(stale)
         except OSError:
             pass
-    return target
+    return removed
+
+
+def list_backups(backup_dir: Path | str | None = None) -> list[Path]:
+    """按时间从新到旧列出备份文件。"""
+    directory = Path(backup_dir) if backup_dir is not None else default_backups_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("jitatrainer-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 __all__ = [
     "Database",
     "backup_database",
+    "list_backups",
     "utc_now_iso",
     "LATEST_VERSION",
 ]

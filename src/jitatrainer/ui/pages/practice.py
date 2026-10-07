@@ -330,8 +330,18 @@ class PracticePage(QWidget):
 
     def _on_finished(self, summary: SessionSummary | None) -> None:
         self.stop_audio()
+        self._backup_after_session()
         if summary is not None:
             self.finished.emit(summary)
+
+    def _backup_after_session(self) -> None:
+        """需求 FR-1000：每次会话结束后做一次轻量备份。失败不影响流程。"""
+        try:
+            from ...data.db import backup_database
+
+            backup_database(reason="session")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _refresh_top(self) -> None:
         stats = self.session.stats

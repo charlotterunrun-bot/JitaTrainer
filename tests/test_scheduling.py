@@ -542,6 +542,111 @@ class TestCrossDayReview:
             moment = states[key].due_at  # 到期日再练
 
 
+class TestAcceptanceCriterion13:
+    """验收标准 §10-13：**把系统时间向后调 3 天后启动，能正确产生"到期复习项"**。
+
+    这里走完整链路：练一天 → 训练项落库 → 换个时间"重新启动" → 从库里读回来调度。
+    """
+
+    def test_three_days_later_produces_due_reviews(self, tmp_path) -> None:
+        from jitatrainer.data.db import Database
+        from jitatrainer.data.repository import DbItemStore
+
+        database = Database(tmp_path / "acceptance.db")
+        database.initialize()
+        with database.connect() as conn:
+            profile_id = int(database.list_profiles(conn)[0]["id"])
+
+        day1 = NOW
+        store = DbItemStore(database, profile_id, "pitch_find")
+        store.conn.close()  # 用独立连接，模拟不同次启动
+
+        # 第一天：练 12 个音并全部答对
+        first_run = QuestionScheduler(
+            level_id="L1",
+            pitch_classes=list(range(12)),
+            item_key_of=lambda pc: key_of(pc, "L1"),
+            states={},
+            rng=random.Random(101),
+            clock=lambda: day1,
+        )
+        persist = DbItemStore(database, profile_id, "pitch_find")
+        for _ in range(12):
+            decision = first_run.next_decision()
+            state = first_run.on_result(decision, correct=True, rt_ms=1200)
+            persist.save(state)
+        persist.close()
+
+        # 第二天：不到期，全是新题/复习之外的来源
+        day2 = day1 + timedelta(days=1, hours=2)
+        second_store = DbItemStore(database, profile_id, "pitch_find")
+        day2_states = second_store.load("L1")
+        assert len(day2_states) == 12, "训练项应从数据库读回来"
+        day2_scheduler = QuestionScheduler(
+            level_id="L1",
+            pitch_classes=list(range(12)),
+            item_key_of=lambda pc: key_of(pc, "L1"),
+            states=day2_states,
+            rng=random.Random(102),
+            clock=lambda: day2,
+        )
+        assert len(day2_scheduler.due_items()) == 12, "第二天应全部到期"
+
+        # 第三天：把时间往后调 3 天再"启动"，必须有到期复习项
+        day4 = day1 + timedelta(days=3)
+        third_store = DbItemStore(database, profile_id, "pitch_find")
+        states = third_store.load("L1")
+        third_store.close()
+        scheduler = QuestionScheduler(
+            level_id="L1",
+            pitch_classes=list(range(12)),
+            item_key_of=lambda pc: key_of(pc, "L1"),
+            states=states,
+            rng=random.Random(103),
+            clock=lambda: day4,
+        )
+
+        due = scheduler.due_items()
+        assert due, "向后调 3 天后必须产生到期复习项"
+        assert len(due) == 12
+        assert all(state.overdue_days(day4) > 0 for state in due)
+
+        # 启动后的第一批题应当是复习题
+        sources = [scheduler.next_decision().source for _ in range(4)]
+        assert sources.count("review") == 4, f"首批应优先出复习题，实际 {sources}"
+
+    def test_future_due_items_are_not_yet_due(self, tmp_path) -> None:
+        """反向验证：间隔没到就不该被当成到期项（否则等于缓存失效）。"""
+        from jitatrainer.data.db import Database
+
+        database = Database(tmp_path / "future.db")
+        database.initialize()
+        with database.connect() as conn:
+            profile_id = int(database.list_profiles(conn)[0]["id"])
+
+        scheduler = QuestionScheduler(
+            level_id="L1",
+            pitch_classes=[4],
+            item_key_of=lambda pc: key_of(pc, "L1"),
+            rng=random.Random(7),
+            clock=lambda: NOW,
+        )
+        decision = scheduler.next_decision()
+        state = scheduler.on_result(decision, correct=True, rt_ms=1000)
+        assert state.due_at is not None
+
+        just_before = state.due_at - timedelta(minutes=1)
+        earlier = QuestionScheduler(
+            level_id="L1",
+            pitch_classes=[4],
+            item_key_of=lambda pc: key_of(pc, "L1"),
+            states={state.item_key: state},
+            rng=random.Random(7),
+            clock=lambda: just_before,
+        )
+        assert earlier.due_items() == []
+
+
 class TestAdvice:
     def _records(self, count: int, accuracy: float, rt: int | None, asked: int = 25) -> list[SessionRecord]:
         return [SessionRecord(asked=asked, accuracy_first=accuracy, avg_rt_ms=rt) for _ in range(count)]

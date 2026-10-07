@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import platform
 import sys
+from pathlib import Path
 
 from . import __app_name__, __version__
 from . import paths
@@ -165,6 +167,52 @@ def run_stats_smoke(window) -> dict[str, object]:  # noqa: ANN001
     }
 
 
+def run_audio_thread_smoke() -> dict[str, object]:
+    """音频分析线程冒烟：构造 → 启动 → 检测 → 停止 → join。
+
+    ``probe_input`` 只走采集层，不构造 ``AnalyzerThread``；而这个线程曾经有两个
+    致命缺陷（dataclass 让 Thread 不可哈希 → 构造即崩；字段 `_stop` 遮蔽 Thread
+    内部方法 → join 崩），合起来就是"插上麦克风一启动就崩"。
+    因此这里必须真的把它跑一遍（用合成波形，不需要麦克风）。
+    """
+    import time
+
+    import numpy as np
+
+    from .core.audio.analyzer import AnalyzerConfig, AnalyzerThread, FrameAnalyzer
+    from .core.audio.ring import RingBuffer
+
+    sample_rate = 48000
+    ring = RingBuffer(capacity=sample_rate * 2, channels=1)
+    events: list = []
+    thread = AnalyzerThread(ring, FrameAnalyzer(AnalyzerConfig()), events.append)
+    thread.start()
+    try:
+        wave = np.sin(2 * np.pi * 196.0 * np.arange(sample_rate // 2) / sample_rate) * 0.3
+        ring.write(wave.astype(np.float32))
+        deadline = time.monotonic() + 3.0
+        while not events and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        thread.stop()
+        thread.join(timeout=2.0)
+
+    detected = round(float(events[0].hz), 1) if events else None
+    expected = 196.0
+    ok = (
+        not thread.is_alive()
+        and detected is not None
+        and abs(detected - expected) / expected < 0.02
+    )
+    return {
+        "ok": ok,
+        "events": len(events),
+        "detected_hz": detected,
+        "expected_hz": expected,
+        "thread_exited": not thread.is_alive(),
+    }
+
+
 def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = False) -> int:
     """离屏自检：验证 Qt、语言包、数据库、音频设备、练习屏。
 
@@ -204,6 +252,12 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
         traceback.print_exc()
         diag["stats_smoke"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    try:
+        diag["audio_thread_smoke"] = run_audio_thread_smoke()
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        diag["audio_thread_smoke"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     print("=== JitaTrainer 自检 ===")
     for key in (
         "app",
@@ -230,6 +284,7 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
         print(f"  {'audio_probe':22} = {probe}")
     print(f"  {'practice_smoke':22} = {diag['practice_smoke']}")
     print(f"  {'stats_smoke':22} = {diag['stats_smoke']}")
+    print(f"  {'audio_thread_smoke':22} = {diag['audio_thread_smoke']}")
     for level in diag["levels"]:  # type: ignore[union-attr]
         print(f"  级别 {level['id']}: {level['name']}（0-{level['max_fret']} 品）")
 
@@ -257,6 +312,10 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
     if isinstance(stats_smoke, dict) and not stats_smoke.get("ok", False):
         print(f"自检失败：统计页冒烟未通过 {stats_smoke}")
         return 7
+    audio_smoke = diag.get("audio_thread_smoke")
+    if isinstance(audio_smoke, dict) and not audio_smoke.get("ok", False):
+        print(f"自检失败：音频分析线程冒烟未通过 {audio_smoke}")
+        return 8
 
     print("自检完成：OK")
     return 0
@@ -285,11 +344,23 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName(__app_name__)
     app.setApplicationVersion(__version__)
 
+    # 需求 FR-1000：每次启动做一次轻量备份
+    _startup_backup()
+
     window = MainWindow(tr)
     window.show()
     if not args.no_wizard:
         window.ensure_first_run()
     return app.exec()
+
+
+def _startup_backup() -> Path | None:
+    """启动备份。失败不能挡住程序启动。"""
+    try:
+        return backup_database(reason="startup")
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("启动备份失败")
+        return None
 
 
 __all__ = ["main", "collect_diagnostics", "run_selftest"]
