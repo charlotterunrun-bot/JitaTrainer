@@ -241,11 +241,16 @@ def cmd_push(token: str, branch: str | None = None) -> None:
     print(f"完成：https://github.com/{OWNER}/{REPO}/tree/{branch}")
 
 
-def cmd_tag(token: str, name: str) -> None:
+def cmd_tag(token: str, name: str, force: bool = False) -> None:
     ensure_remote(token)
-    git("tag", "-a", name, "-m", f"里程碑 {name}", token=token)
-    git("push", "origin", name, token=token)
-    print(f"标签已推送：{name}")
+    if force:
+        git("tag", "-a", "-f", name, "-m", f"里程碑 {name}", token=token)
+        git("push", "origin", "--force", name, token=token)
+        print(f"标签已推送：{name}（已强制覆盖）")
+    else:
+        git("tag", "-a", name, "-m", f"里程碑 {name}", token=token)
+        git("push", "origin", name, token=token)
+        print(f"标签已推送：{name}")
 
 
 def cmd_status(token: str) -> None:
@@ -263,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     p_push.add_argument("branch", nargs="?", default=None)
     p_tag = sub.add_parser("tag", help="创建并推送里程碑标签")
     p_tag.add_argument("name")
+    p_tag.add_argument("--force", action="store_true", help="覆盖同名标签（用于里程碑定稿后移动标签）")
     sub.add_parser("status", help="显示仓库状态")
     args = parser.parse_args(argv)
 
@@ -272,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "push":
         cmd_push(token, args.branch)
     elif args.command == "tag":
-        cmd_tag(token, args.name)
+        cmd_tag(token, args.name, force=args.force)
     elif args.command == "status":
         cmd_status(token)
     return 0
