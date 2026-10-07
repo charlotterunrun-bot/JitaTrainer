@@ -20,7 +20,7 @@ from ..core.judge.base import (
 )
 from ..core.judge.pitch_class_judge import JudgeConfig, PitchClassJudge
 from ..core.theory.levels import DEFAULT_LEVEL_ID
-from .base import SOURCE_REQUEUE, Question, QuestionContext
+from .base import SOURCE_NEW, SOURCE_REQUEUE, Question, QuestionContext
 
 #: 会话模式（需求 FR-560）
 MODE_DURATION = "duration"
@@ -177,6 +177,7 @@ class PracticeSession:
         *,
         profile_id: int | None = None,
         clock: Callable[[], float] = time.monotonic,
+        scheduler=None,  # noqa: ANN001 - scheduling.QuestionScheduler，避免循环依赖
     ) -> None:
         config.validate()
         self.module = module
@@ -184,6 +185,8 @@ class PracticeSession:
         self.judge_factory = judge_factory
         self.profile_id = profile_id
         self.clock = clock
+        #: 出题调度器（M3）。为 None 时退化为纯随机出题（M2 行为）。
+        self.scheduler = scheduler
 
         self.stats = SessionStats()
         self._context = QuestionContext(
@@ -199,6 +202,8 @@ class PracticeSession:
         self._paused_total = 0.0
         self._pause_started: float | None = None
         self._first_attempt_used = False
+        #: 当前题对应的调度决定（M3）
+        self._decision = None
         #: 上一个判定到的音名。吉他的音能响好几秒（比宽容期还长），
         #: 因此新题开始时要告诉判定器"这个音是上一题残留的，别当答案"。
         self._ignore_pc: int | None = None
@@ -297,6 +302,7 @@ class PracticeSession:
         self.stats.combo = 0
         self.stats.wrong_by_item[self._question.item_key] += 1
         self._ignore_pc = None
+        self._record_schedule(correct=False, skipped=True)
         events = [SessionEvent(kind=EVENT_SKIPPED, question=self._question)]
         events.extend(self._maybe_finish_or_next())
         return self._emit(events)
@@ -364,11 +370,42 @@ class PracticeSession:
 
     # ------------------------------------------------------------------ 内部
     def _next_question(self) -> list[SessionEvent]:
+        if self.scheduler is not None:
+            # M3：由调度器决定出什么（到期复习 / 薄弱强化 / 新题 / 错题回炉）
+            decision = self.scheduler.next_decision()
+            self._decision = decision
+            self._context.requested_pc = decision.pitch_class
+            self._context.source = decision.source
+        else:
+            self._context.requested_pc = None
+            self._context.source = SOURCE_NEW
+
         question = self.module.generate(self._context)
         self._question = question
         self._judge = None
         self._first_attempt_used = False
         return [SessionEvent(kind=EVENT_QUESTION, question=question)]
+
+    def _record_schedule(
+        self,
+        *,
+        correct: bool,
+        skipped: bool = False,
+        timed_out: bool = False,
+        rt_ms: int | None = None,
+    ) -> None:
+        """把结果交给调度器（更新记忆曲线与回炉队列）。"""
+        if self.scheduler is None or self._decision is None or self._question is None:
+            return
+        self.scheduler.on_result(
+            self._decision,
+            correct=correct,
+            first_attempt=not self._first_attempt_used,
+            skipped=skipped,
+            timed_out=timed_out,
+            hinted=self.config.show_note_name,
+            rt_ms=rt_ms,
+        )
 
     def _on_correct(self, outcome: JudgeOutcome) -> list[SessionEvent]:
         assert self._question is not None
@@ -383,6 +420,9 @@ class PracticeSession:
         if self.config.scoring_enabled:
             self.stats.score += self.score_for(outcome, self.stats.combo - 1, self._question)
         self._ignore_pc = outcome.detected_pc
+        self._record_schedule(
+            correct=True, rt_ms=int(outcome.elapsed_ms) if outcome.elapsed_ms else None
+        )
 
         events = [SessionEvent(kind=EVENT_CORRECT, question=self._question, outcome=outcome)]
         events.extend(self._maybe_finish_or_next())
@@ -394,6 +434,7 @@ class PracticeSession:
         self.stats.combo = 0
         self._first_attempt_used = True
         self.stats.wrong_by_item[self._question.item_key] += 1
+        self._record_schedule(correct=False)
         return [SessionEvent(kind=EVENT_WRONG, question=self._question, outcome=outcome)]
 
     def _on_timeout(self, outcome: JudgeOutcome) -> list[SessionEvent]:
@@ -403,6 +444,7 @@ class PracticeSession:
         self.stats.combo = 0
         self.stats.wrong_by_item[self._question.item_key] += 1
         self._ignore_pc = None
+        self._record_schedule(correct=False, timed_out=True)
         events = [SessionEvent(kind=EVENT_TIMEOUT, question=self._question, outcome=outcome)]
         events.extend(self._maybe_finish_or_next())
         return events

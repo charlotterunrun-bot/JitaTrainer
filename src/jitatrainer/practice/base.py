@@ -44,6 +44,13 @@ class Question:
         return pitch_class_name(self.target_pc)
 
 
+def default_item_key(pitch_class: int, level_id: str) -> str:
+    """训练项键的默认格式：``note=B|level=L2``（需求 FR-610）。"""
+    from ..core.theory.notes import NOTE_NAMES
+
+    return f"note={NOTE_NAMES[pitch_class % 12]}|level={level_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class RenderSpec:
     """谱面渲染描述（由 UI 通用控件解释）。"""

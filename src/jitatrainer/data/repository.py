@@ -235,4 +235,156 @@ class SessionRecorder:
                 pass
 
 
-__all__ = ["PracticeRepository", "SessionRecorder"]
+__all__ = ["PracticeRepository", "SessionRecorder", "DbItemStore"]
+
+
+# ---------------------------------------------------------------------------
+# 训练项状态的持久化（M3 记忆曲线）
+# ---------------------------------------------------------------------------
+def _parse_time(text: str | None):
+    if not text:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+class DbItemStore:
+    """把训练项状态读写到 ``items`` 表。
+
+    实现 ``scheduling.scheduler`` 需要的 load/save 接口；调度器不直接依赖数据库。
+    """
+
+    def __init__(self, db: Database, profile_id: int, module_id: str) -> None:
+        from ..scheduling.srs import ItemState
+
+        self.db = db
+        self.profile_id = profile_id
+        self.module_id = module_id
+        self._item_state_cls = ItemState
+        self.conn = db.connect()
+        self.error: str | None = None
+
+    # ------------------------------------------------------------------ 读
+    def load(self, level_id: str) -> dict:
+        from ..scheduling.srs import ItemState
+
+        rows = self.conn.execute(
+            "SELECT * FROM items WHERE profile_id = ? AND module_id = ? AND level_id = ?",
+            (self.profile_id, self.module_id, level_id),
+        ).fetchall()
+        states: dict[str, ItemState] = {}
+        for row in rows:
+            states[row["item_key"]] = ItemState(
+                item_key=row["item_key"],
+                pitch_class=int(row["pitch_class"]),
+                level_id=row["level_id"],
+                ease=float(row["ease"]),
+                interval_index=int(row["interval_index"]),
+                reps=int(row["reps"]),
+                lapses=float(row["lapses"]),
+                seen_count=int(row["seen_count"]),
+                correct_count=int(row["correct_count"]),
+                error_rate=float(row["error_rate"]),
+                avg_rt_ms=row["avg_rt_ms"],
+                due_at=_parse_time(row["due_at"]),
+                last_seen_at=_parse_time(row["last_seen_at"]),
+            )
+        return states
+
+    # ------------------------------------------------------------------ 写
+    def save(self, state) -> None:  # noqa: ANN001 - ItemState
+        try:
+            self.conn.execute(
+                "INSERT INTO items (profile_id, module_id, item_key, pitch_class, level_id, ease, "
+                "interval_index, due_at, reps, lapses, seen_count, correct_count, error_rate, "
+                "avg_rt_ms, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(profile_id, module_id, item_key) DO UPDATE SET "
+                "ease = excluded.ease, interval_index = excluded.interval_index, "
+                "due_at = excluded.due_at, reps = excluded.reps, lapses = excluded.lapses, "
+                "seen_count = excluded.seen_count, correct_count = excluded.correct_count, "
+                "error_rate = excluded.error_rate, avg_rt_ms = excluded.avg_rt_ms, "
+                "last_seen_at = excluded.last_seen_at",
+                (
+                    self.profile_id,
+                    self.module_id,
+                    state.item_key,
+                    state.pitch_class,
+                    state.level_id,
+                    state.ease,
+                    state.interval_index,
+                    state.due_at.isoformat() if state.due_at else None,
+                    state.reps,
+                    state.lapses,
+                    state.seen_count,
+                    state.correct_count,
+                    state.error_rate,
+                    state.avg_rt_ms,
+                    state.last_seen_at.isoformat() if state.last_seen_at else None,
+                ),
+            )
+            self.conn.commit()
+        except Exception as exc:  # noqa: BLE001 - 落库失败不得中断练习
+            self.error = f"{type(exc).__name__}: {exc}"
+
+    def save_many(self, states) -> None:  # noqa: ANN001
+        for state in states:
+            self.save(state)
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class PracticeStatsRepository:
+    """统计与难度建议需要的历史查询（M3/M4 共用）。"""
+
+    def __init__(self, db: Database, profile_id: int, module_id: str = "pitch_find") -> None:
+        self.db = db
+        self.profile_id = profile_id
+        self.module_id = module_id
+
+    def recent_session_rows(self, conn, limit: int = 20, level_id: str | None = None):  # noqa: ANN001
+        sql = (
+            "SELECT * FROM sessions WHERE profile_id = ? AND module_id = ? AND ended_at IS NOT NULL"
+        )
+        params: list[object] = [self.profile_id, self.module_id]
+        if level_id is not None:
+            sql += " AND target_value IS NOT NULL"
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return list(conn.execute(sql, params))
+
+    def should_advance_level(self, conn, level_id: str) -> bool:  # noqa: ANN001
+        """依据最近 3 次会话判断是否建议进入下一难度。"""
+        from ..scheduling.advice import record_from_row, should_advance
+
+        rows = self.recent_session_rows(conn, limit=3)
+        records = [record_from_row(row) for row in rows]
+        return should_advance(records)
+
+    def item_summary(self, conn, level_id: str):  # noqa: ANN001
+        """训练项概览（用于首页与统计页）。"""
+        return list(
+            conn.execute(
+                "SELECT * FROM items WHERE profile_id = ? AND module_id = ? AND level_id = ? "
+                "ORDER BY error_rate DESC, lapses DESC",
+                (self.profile_id, self.module_id, level_id),
+            )
+        )
+
+    def due_count(self, conn, level_id: str) -> int:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM items WHERE profile_id = ? AND module_id = ? "
+            "AND level_id = ? AND due_at IS NOT NULL AND due_at <= ?",
+            (self.profile_id, self.module_id, level_id, utc_now_iso()),
+        ).fetchone()
+        return int(row["c"]) if row else 0

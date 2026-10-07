@@ -88,9 +88,16 @@ class HomePage(QWidget):
         self.info_grid.setHorizontalSpacing(18)
         self.info_grid.setVerticalSpacing(8)
         layout.addLayout(self.info_grid)
+
+        self.advice_label = QLabel("")
+        self.advice_label.setStyleSheet(
+            "color: #e8b339; font-size: 15px; font-weight: 600; padding: 6px 0;"
+        )
+        self.advice_label.setVisible(False)
+        layout.addWidget(self.advice_label)
         layout.addStretch(1)
 
-        self.hint = QLabel("M2 进行中：练习屏已接入，记忆曲线调度将在 M3 接入。")
+        self.hint = QLabel("M3 进行中：记忆曲线调度已接入，统计报告将在 M4 实现。")
         self.hint.setObjectName("faint")
         layout.addWidget(self.hint)
 
@@ -117,7 +124,7 @@ class HomePage(QWidget):
         return frame
 
     def refresh(self) -> None:
-        """刷新信息区（设备、门限、档案、版本）。"""
+        """刷新信息区（设备、门限、档案、版本、到期复习、难度建议）。"""
         while self.info_grid.count():
             item = self.info_grid.takeAt(0)
             widget = item.widget()
@@ -135,11 +142,13 @@ class HomePage(QWidget):
             if default is not None:
                 device_name = f"{default.name}（系统默认）"
 
+        due_text, advice_text = self._learning_status()
         rows = [
             (self.tr("home.profiles"), self.profile_name),
             (self.tr("settings.input_device"), device_name),
             (self.tr("settings.stable_preset"), self._preset_label()),
             ("起音门限", f"{self.settings.get_float('noise_floor_db', -60.0) + self.settings.get_float('gate_offset_db', 12.0):.1f} dB"),
+            (self.tr("home.review_status"), due_text),
             (self.tr("app.version"), __version__),
         ]
         for row, (key, value) in enumerate(rows):
@@ -148,6 +157,34 @@ class HomePage(QWidget):
             value_label = QLabel(str(value))
             self.info_grid.addWidget(key_label, row, 0)
             self.info_grid.addWidget(value_label, row, 1)
+
+        self.advice_label.setText(advice_text)
+        self.advice_label.setVisible(bool(advice_text))
+
+    def _learning_status(self) -> tuple[str, str]:
+        """到期复习数量与难度进阶建议（M3）。"""
+        from ...core.theory.levels import next_level
+        from ...data.repository import PracticeStatsRepository
+
+        level_id = self.settings.get("level_id", "L1")
+        try:
+            repository = PracticeStatsRepository(self.settings.db, self.profile_id or 1)
+            conn = self.settings.conn
+            due = repository.due_count(conn, level_id)
+            advice = repository.should_advance_level(conn, level_id)
+        except Exception:  # noqa: BLE001 - 统计失败不影响首页
+            return "—", ""
+
+        due_text = self.tr("home.due_today", count=due) if due else self.tr("home.no_due")
+        advice_text = ""
+        if advice:
+            upcoming = next_level(level_id)
+            if upcoming is not None:
+                name = upcoming.name_zh if self.tr.language == "zh_CN" else upcoming.name_en
+                advice_text = self.tr(
+                    "home.suggest_unlock", level=f"{name}（0–{upcoming.max_fret} 品）"
+                )
+        return due_text, advice_text
 
     def _preset_label(self) -> str:
         preset = self.settings.get("stable_preset", "balanced")

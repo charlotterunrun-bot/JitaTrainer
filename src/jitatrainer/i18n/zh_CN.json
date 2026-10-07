@@ -25,6 +25,7 @@
   "home.tuner": "调音器",
   "home.due_today": "今日待复习 {count} 项",
   "home.no_due": "今日无待复习项",
+  "home.review_status": "复习计划",
   "home.suggest_unlock": "建议解锁下一难度：{level}",
 
   "module.pitch_find.name": "看谱找音",

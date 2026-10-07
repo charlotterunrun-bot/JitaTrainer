@@ -168,6 +168,60 @@ class TestPracticePage:
         assert not page.session.is_paused
 
 
+class TestLearningIntegration:
+    """M3：练习屏接入记忆曲线调度并把训练项落库。"""
+
+    def test_practice_page_wires_scheduler_and_persists_items(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        db = Database(tmp_path / "m3.db")
+        db.initialize()
+        conn = db.connect()
+        profile_id = db.list_profiles(conn)[0]["id"]
+        settings = Settings(db, conn, profile_id)
+
+        module = registry.get_module("pitch_find")
+        config = SessionConfig(mode=MODE_COUNT, target_count=3, level_id="L1")
+        page = PracticePage(settings, tr, config, module, profile_id=profile_id)
+        page._attach_backends()  # noqa: SLF001
+        assert page.session.scheduler is not None, "练习屏应接入出题调度器"
+
+        _drive(page, 3)
+
+        rows = conn.execute(
+            "SELECT * FROM items WHERE profile_id = ?", (profile_id,)
+        ).fetchall()
+        assert rows, "训练项应写入 items 表"
+        assert all(row["due_at"] for row in rows), "答对后应排定下次到期时间"
+        assert all(row["seen_count"] >= 1 for row in rows)
+
+        sessions = conn.execute("SELECT * FROM sessions").fetchall()
+        assert len(sessions) == 1
+        assert sessions[0]["total"] == 3
+        page.stop_audio()
+        conn.close()
+
+    def test_scheduler_marks_answered_items_not_new(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        db = Database(tmp_path / "m3b.db")
+        db.initialize()
+        conn = db.connect()
+        profile_id = db.list_profiles(conn)[0]["id"]
+        settings = Settings(db, conn, profile_id)
+
+        module = registry.get_module("pitch_find")
+        config = SessionConfig(mode=MODE_COUNT, target_count=2, level_id="L1")
+        page = PracticePage(settings, tr, config, module, profile_id=profile_id)
+        page._attach_backends()  # noqa: SLF001
+
+        scheduler = page.session.scheduler
+        assert scheduler is not None
+        assert all(state.is_new for state in scheduler.states.values())
+
+        _drive(page, 2)
+        answered = [s for s in scheduler.states.values() if not s.is_new]
+        assert len(answered) == 2, "答过的题不应再算新题"
+        page.stop_audio()
+        conn.close()
+
+
 class TestDialogs:
     def test_setup_dialog_roundtrip(self, tr, app) -> None:  # noqa: ARG002
         base = SessionConfig(mode=MODE_COUNT, target_count=20, level_id="L2")

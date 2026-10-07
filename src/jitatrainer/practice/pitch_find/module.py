@@ -16,12 +16,13 @@ from ..base import (
     Question,
     QuestionContext,
     RenderSpec,
+    default_item_key,
 )
 from ..registry import register_module
 from ...core.judge.pitch_class_judge import JudgeConfig
 from ...core.theory.fretboard import Position, level_pitch_classes, positions_for_pitch_class
 from ...core.theory.levels import DEFAULT_LEVEL_ID, get_level
-from ...core.theory.notes import NOTE_NAMES, pitch_class_name
+from ...core.theory.notes import pitch_class_name
 
 MODULE_ID = "pitch_find"
 
@@ -31,7 +32,7 @@ MAX_SAME_PITCH_CLASS_RUN = 2
 
 def item_key(pitch_class: int, level_id: str) -> str:
     """训练项键 = 音名 × 把位区间（需求 FR-610）。"""
-    return f"note={NOTE_NAMES[pitch_class % 12]}|level={level_id}"
+    return default_item_key(pitch_class, level_id)
 
 
 @register_module

@@ -25,6 +25,7 @@
   "home.tuner": "Tuner",
   "home.due_today": "{count} items due today",
   "home.no_due": "Nothing due today",
+  "home.review_status": "Review plan",
   "home.suggest_unlock": "Suggested next level: {level}",
 
   "module.pitch_find.name": "Note Finding",

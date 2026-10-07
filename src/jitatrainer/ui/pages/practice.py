@@ -77,6 +77,7 @@ class PracticePage(QWidget):
         )
         self.audio = None
         self.recorder = None
+        self.item_store = None
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
         self._timer.timeout.connect(self._poll)
@@ -143,7 +144,7 @@ class PracticePage(QWidget):
 
     # ------------------------------------------------------------------ 生命周期
     def start(self) -> None:
-        self._attach_recorder()
+        self._attach_backends()
         try:
             self.audio = build_session(self.settings)
             self.audio.start()
@@ -157,9 +158,16 @@ class PracticePage(QWidget):
         self._timer.start()
         self.setFocus()
 
+    def _attach_backends(self) -> None:
+        """接上持久化（答题记录）与记忆曲线调度。任何失败都不影响练习。"""
+        if self.profile_id is None:
+            return
+        self._attach_recorder()
+        self._attach_scheduler()
+
     def _attach_recorder(self) -> None:
         """把会话过程写入数据库（失败不影响练习）。"""
-        if self.profile_id is None or self.recorder is not None:
+        if self.recorder is not None:
             return
         try:
             from ...data.repository import PracticeRepository, SessionRecorder
@@ -181,6 +189,30 @@ class PracticePage(QWidget):
         except Exception:  # noqa: BLE001
             self.recorder = None
 
+    def _attach_scheduler(self) -> None:
+        """接上 M3 记忆曲线调度：到期复习 / 薄弱强化 / 新题 / 错题回炉。"""
+        if self.session.scheduler is not None:
+            return
+        try:
+            from ...core.theory.fretboard import level_pitch_classes
+            from ...data.repository import DbItemStore
+            from ...practice.base import default_item_key
+            from ...scheduling.scheduler import QuestionScheduler
+
+            store = DbItemStore(self.settings.db, self.profile_id, self.config.module_id)
+            pitch_classes = level_pitch_classes(self.config.level_id, self.config.include_accidentals)
+            scheduler = QuestionScheduler(
+                level_id=self.config.level_id,
+                pitch_classes=pitch_classes,
+                item_key_of=lambda pc: default_item_key(pc, self.config.level_id),
+                states=store.load(self.config.level_id),
+                on_state_change=store.save,
+            )
+            self.item_store = store
+            self.session.scheduler = scheduler
+        except Exception:  # noqa: BLE001
+            self.item_store = None
+
     def stop_audio(self) -> None:
         self._timer.stop()
         if self.audio is not None:
@@ -189,6 +221,9 @@ class PracticePage(QWidget):
         if self.recorder is not None:
             self.recorder.close()
             self.recorder = None
+        if self.item_store is not None:
+            self.item_store.close()
+            self.item_store = None
 
     def leave(self) -> None:
         self.stop_audio()

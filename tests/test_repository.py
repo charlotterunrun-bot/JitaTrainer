@@ -203,6 +203,131 @@ class TestRecorder:
         assert recorder.error is not None
 
 
+class TestItemStoreAndAdvice:
+    """M3：训练项落库与难度建议。"""
+
+    def test_item_store_roundtrip(self, database: Database) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from jitatrainer.data.repository import DbItemStore
+        from jitatrainer.scheduling.srs import ItemState, review, initial_state, EVENT_CORRECT_FIRST
+
+        with database.connect() as conn:
+            profile_id = database.list_profiles(conn)[0]["id"]
+
+        store = DbItemStore(database, profile_id, "pitch_find")
+        now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+        state = review(
+            initial_state("note=E|level=L1", 4, "L1"), EVENT_CORRECT_FIRST, now=now, rt_ms=1200
+        )
+        store.save(state)
+
+        # 重新读取：所有字段都要还原
+        reloaded = DbItemStore(database, profile_id, "pitch_find").load("L1")
+        assert "note=E|level=L1" in reloaded
+        loaded = reloaded["note=E|level=L1"]
+        assert loaded.pitch_class == 4
+        assert loaded.interval_index == state.interval_index
+        assert loaded.seen_count == 1
+        assert loaded.correct_count == 1
+        assert loaded.avg_rt_ms == 1200
+        assert loaded.due_at == state.due_at
+        assert loaded.last_seen_at == state.last_seen_at
+        store.close()
+
+    def test_item_store_upsert_updates_existing(self, database: Database) -> None:
+        from datetime import datetime, timezone
+
+        from jitatrainer.data.repository import DbItemStore
+        from jitatrainer.scheduling.srs import EVENT_CORRECT_FIRST, EVENT_WRONG, initial_state, review
+
+        with database.connect() as conn:
+            profile_id = database.list_profiles(conn)[0]["id"]
+        store = DbItemStore(database, profile_id, "pitch_find")
+        now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+
+        state = initial_state("note=E|level=L1", 4, "L1")
+        store.save(state)
+        state = review(state, EVENT_CORRECT_FIRST, now=now, rt_ms=1000)
+        store.save(state)
+        state = review(state, EVENT_WRONG, now=now)
+        store.save(state)
+
+        with database.connect() as conn:
+            rows = conn.execute("SELECT * FROM items").fetchall()
+        assert len(rows) == 1, "同一训练项只应有一行"
+        assert rows[0]["lapses"] == 1.0
+        assert rows[0]["interval_index"] == 0
+
+    def test_due_count(self, database: Database) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from jitatrainer.data.repository import DbItemStore, PracticeStatsRepository
+        from jitatrainer.scheduling.srs import ItemState
+
+        with database.connect() as conn:
+            profile_id = database.list_profiles(conn)[0]["id"]
+        store = DbItemStore(database, profile_id, "pitch_find")
+        now = datetime.now(timezone.utc)
+        store.save(
+            ItemState(
+                item_key="note=E|level=L1",
+                pitch_class=4,
+                level_id="L1",
+                seen_count=2,
+                due_at=now - timedelta(days=1),
+            )
+        )
+        store.save(
+            ItemState(
+                item_key="note=A|level=L1",
+                pitch_class=9,
+                level_id="L1",
+                seen_count=2,
+                due_at=now + timedelta(days=3),
+            )
+        )
+        with database.connect() as conn:
+            assert PracticeStatsRepository(database, profile_id).due_count(conn, "L1") == 1
+        store.close()
+
+    def test_advice_needs_three_strong_sessions(self, database: Database) -> None:
+        from jitatrainer.data.repository import PracticeStatsRepository
+
+        with database.connect() as conn:
+            profile_id = database.list_profiles(conn)[0]["id"]
+            repository = PracticeStatsRepository(database, profile_id)
+            assert not repository.should_advance_level(conn, "L1")
+
+            # 三次强会话：25 题、24 题首次正确、平均 1.5s
+            for _ in range(3):
+                conn.execute(
+                    "INSERT INTO sessions (profile_id, module_id, mode, target_value, started_at, "
+                    "ended_at, total, correct_first, correct_final, avg_rt_ms) "
+                    "VALUES (?, 'pitch_find', 'count', 25, '2026-10-07T10:00:00Z', "
+                    "'2026-10-07T10:15:00Z', 25, 24, 25, 1500)",
+                    (profile_id,),
+                )
+            conn.commit()
+            assert repository.should_advance_level(conn, "L1")
+
+    def test_advice_ignores_unfinished_sessions(self, database: Database) -> None:
+        from jitatrainer.data.repository import PracticeStatsRepository
+
+        with database.connect() as conn:
+            profile_id = database.list_profiles(conn)[0]["id"]
+            for _ in range(3):
+                conn.execute(
+                    "INSERT INTO sessions (profile_id, module_id, mode, target_value, started_at, "
+                    "total, correct_first, correct_final, avg_rt_ms) "
+                    "VALUES (?, 'pitch_find', 'count', 25, '2026-10-07T10:00:00Z', 25, 25, 25, 1200)",
+                    (profile_id,),
+                )
+            conn.commit()
+            repository = PracticeStatsRepository(database, profile_id)
+            assert not repository.should_advance_level(conn, "L1")
+
+
 class TestDurationSessionPersistence:
     def test_duration_mode_writes_target_value(self, database: Database) -> None:
         with database.connect() as conn:
