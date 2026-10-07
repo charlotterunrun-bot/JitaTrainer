@@ -136,7 +136,18 @@ class TestHarmonicCorrection:
         assert changed, "弱基频场景未被修正（低音弦会报高八度）"
         assert corrected == pytest.approx(f0, rel=0.02)
 
-    def test_does_not_correct_when_subharmonic_absent(self) -> None:
+    def test_corrects_twelfth_lock_when_third_harmonic_dominates(self) -> None:
+        """真实录音暴露的第二种锁定：基频只有三次谐波的 1/19 时，YIN 报十二度。
+
+        此时 hz/3 处有（较弱的）基频峰、且其二次谐波也有支持，必须向下修正。
+        """
+        f0 = midi_to_hz(45)  # A2 = 110Hz
+        frame = _synth_weak_fundamental_twelfth(f0)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 3)
+        assert changed, "十二度锁定未被修正（第 5 弦会报成 D#4）"
+        assert corrected == pytest.approx(f0, rel=0.03)
+
+    def test_does_not_shift_when_subharmonic_absent(self) -> None:
         """没有低八度成分时不得乱改（防止把正确的高音拉低）。"""
         f0 = midi_to_hz(50)  # D3
         frame = frame_of(f0)
@@ -153,11 +164,33 @@ class TestHarmonicCorrection:
         assert not changed
 
 
-def _synth_weak_fundamental(f0: float, *, fundamental_gain: float = 0.02, duration: float = 1.0) -> np.ndarray:
-    """合成"基频很弱、偶次谐波主导"的音（模拟内置麦克风低频衰减）。"""
+def _synth_weak_fundamental(f0: float, *, fundamental_gain: float = 0.054, duration: float = 1.0) -> np.ndarray:
+    """合成"基频很弱、偶次谐波主导"的音（模拟内置麦克风低频衰减）。
+
+    基频比例 5.4% 取自实测：第 6 弦片段里基频 76.2Hz 的幅度是二次谐波
+    155.3Hz 的 1/18。
+    """
     t = np.arange(int(SAMPLERATE * duration)) / SAMPLERATE
     signal = fundamental_gain * np.sin(2 * np.pi * f0 * t)
     for n, amplitude in ((2, 1.0), (4, 0.5), (6, 0.3), (8, 0.15)):
+        freq = f0 * n
+        if freq < SAMPLERATE / 2:
+            signal += amplitude * np.sin(2 * np.pi * freq * t)
+    signal /= np.max(np.abs(signal)) + 1e-12
+    start = int(0.15 * SAMPLERATE)
+    return signal[start : start + 2048].astype(np.float64)
+
+
+def _synth_weak_fundamental_twelfth(f0: float, duration: float = 1.0) -> np.ndarray:
+    """合成"基频很弱、三次谐波主导"的音（十二度锁定的成因）。
+
+    谐波比例取自 2026-10-07 的真实测量：第 5 弦片段里基频 106.9Hz 的幅度
+    只有三次谐波 317.9Hz 的 **1/19**（≈5.3%），二次谐波约为基频的 1.2 倍。
+    刻意用实测比例而不是随便取一个值，避免把阈值卡在临界点上。
+    """
+    t = np.arange(int(SAMPLERATE * duration)) / SAMPLERATE
+    signal = 0.053 * np.sin(2 * np.pi * f0 * t) + 0.064 * np.sin(2 * np.pi * 2 * f0 * t)
+    for n, amplitude in ((3, 1.0), (6, 0.5), (9, 0.3), (12, 0.15)):
         freq = f0 * n
         if freq < SAMPLERATE / 2:
             signal += amplitude * np.sin(2 * np.pi * freq * t)

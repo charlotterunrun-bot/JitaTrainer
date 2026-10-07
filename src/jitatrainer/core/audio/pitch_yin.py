@@ -150,21 +150,28 @@ def harmonic_correct(
     low_presence_ratio: float = 0.02,
     low_floor_factor: float = 3.0,
     min_low_hz: float = 60.0,
+    fmin: float = 70.0,
+    low_divisors: tuple[int, ...] = (2, 3),
 ) -> tuple[float, bool]:
-    """谐波校验：抑制八度误判。
+    """谐波校验：抑制 YIN 的"谐波锁定"误判。
 
-    这里处理两类方向相反的误判，规则分开、互不干扰：
+    **A. 低频/中频区的谐波锁定（真实录音实测发现）**
 
-    **A. 低频区的"高八度锁定"（真实录音实测发现）**
+    麦克风低频响应差、或拨弦位置偏桥时，基频可能远弱于某个高次谐波。
+    2026-10-07 的真实录音里出现过两种：
 
-    内置麦克风对 60–150Hz 响应差时，低音弦的基频会被压得很弱——实测第 6 弦
-    基频 76Hz 的幅度只有二次谐波 155Hz 的 **1/18**，YIN 于是锁到高八度。
-    此时频谱里 f0/2 处**确实有峰**（只是弱），因此判据是"存在性"而不是"更强"：
+      - 第 6 弦：基频 78Hz 的幅度只有二次谐波 155Hz 的 **1/18** → YIN 报高八度；
+      - 第 5 弦：基频 107Hz 的幅度只有三次谐波 318Hz 的 **1/19** → YIN 报十二度。
 
-      - 仅当 f0 <= low_max_hz（低音/中音弦区）时启用；
-      - f0/2 必须仍在吉他音域内（>= min_low_hz）；
-      - f0/2 处存在局部谱峰，且其幅度 > low_presence_ratio × f0 处幅度，
-        同时显著高于 60–1200Hz 频带的中位幅度（排除噪声里的偶发隆起）。
+    这类情况下候选基频（hz/2、hz/3）在频谱里**确实有峰，只是很弱**，
+    因此判据用"存在性"而不是"更强"，并要求：
+
+      1. 候选基频落在吉他音域内（>= max(min_low_hz, fmin)）；
+      2. 候选处存在局部谱峰，幅度 > low_presence_ratio × 当前读数处幅度，
+         且 > low_floor_factor × 频带中位幅度（排除噪声里的偶发隆起）；
+      3. **候选基频的二次谐波处也有支持** —— 真正的低音才有这个特征，
+         这一条用于排除"随手把高音拉低"的误伤；
+      4. 多个候选都成立时取**最低**的那个。
 
     **B. 高频区的"把二次谐波当基频"**
 
@@ -199,27 +206,32 @@ def harmonic_correct(
             return 0.0
         return float(spectrum[local])
 
-    # ---------------- A. 低频区：修正高八度锁定 ----------------
+    # ---------------- A. 低频/中频区：按约数向下搜索真实基频 ----------------
     if hz <= low_max_hz:
-        half = hz / 2.0
-        if half < min_low_hz:
-            return hz, False
-        energy_half = peak_at(half)
-        if energy_half <= 0.0:
-            return hz, False
         energy_here = peak_at(hz)
-
-        band = spectrum[
-            max(1, int(60 / bin_hz)) : min(len(spectrum), int(1200 / bin_hz))
-        ]
+        band = spectrum[max(1, int(60 / bin_hz)) : min(len(spectrum), int(1200 / bin_hz))]
         band_median = float(np.median(band)) if band.size else 0.0
+        min_candidate = max(min_low_hz, fmin)
 
-        if (
-            energy_here > 0.0
-            and energy_half > low_presence_ratio * energy_here
-            and energy_half > low_floor_factor * band_median
-        ):
-            return half, True
+        best: float | None = None
+        for divisor in low_divisors:
+            candidate = hz / divisor
+            if candidate < min_candidate:
+                continue
+            presence = peak_at(candidate)
+            if presence <= 0.0:
+                continue
+            if energy_here > 0.0 and presence < low_presence_ratio * energy_here:
+                continue
+            if presence < low_floor_factor * band_median:
+                continue
+            second = peak_at(candidate * 2.0)
+            if second <= 0.0 or (energy_here > 0.0 and second < low_presence_ratio * energy_here):
+                continue
+            best = candidate  # 继续循环，取更低的候选
+
+        if best is not None:
+            return best, True
         return hz, False
 
     # ---------------- B. 高频区：保守的向下修正 ----------------

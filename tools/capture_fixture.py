@@ -177,6 +177,11 @@ def analyze_segments(samples: np.ndarray, samplerate: int = SAMPLERATE, min_fram
 
     floor = float(np.percentile(levels, 20)) if levels else -120.0
     gate = max(-70.0, min(-20.0, floor + 12.0))
+    # 片段整段都是乐音时（没有静音段），按分位数算出的"噪声地板"会被抬高，
+    # 门限反而高过信号本身。这里用高分位电平兜底，保证短片段也能分析。
+    if levels:
+        ceiling = float(np.percentile(levels, 90))
+        gate = min(gate, ceiling - 6.0)
 
     readings: list[tuple[float, float | None]] = []
     for t, _level in frames:

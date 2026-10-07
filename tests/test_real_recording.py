@@ -24,6 +24,7 @@ from jitatrainer.core.audio.pitch_yin import PitchDetector
 from jitatrainer.core.theory.notes import hz_to_midi, midi_to_hz
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_open_strings.wav"
+TWELFTH_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_twelfth_lock.wav"
 SAMPLERATE = 48000
 SEGMENT_SECONDS = 0.5
 GAP_SECONDS = 0.1
@@ -69,6 +70,48 @@ def segment_frame(samples: np.ndarray, index: int) -> np.ndarray:
         if rms > best_rms:
             best_rms, best_frame = rms, frame
     return best_frame
+
+
+def load_wav(path: Path) -> np.ndarray:
+    with wave.open(str(path), "rb") as handle:
+        return np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2").astype(np.float64) / 32768.0
+
+
+def loudest_frame(samples: np.ndarray, window: int = WINDOW, hop: int = HOP) -> np.ndarray:
+    """在整段音频里找能量最强的一窗（真实程序也是持续扫描取最佳窗口）。"""
+    best = samples[:window]
+    best_rms = float(np.sqrt(np.mean(best**2))) if best.size else -1.0
+    for start in range(0, max(0, samples.size - window), hop):
+        frame = samples[start : start + window]
+        rms = float(np.sqrt(np.mean(frame**2)))
+        if rms > best_rms:
+            best_rms, best = rms, frame
+    return best
+
+
+class TestTwelfthLock:
+    """第 5 弦的"十二度锁定"：基频 107Hz 只有三次谐波 318Hz 的 1/19。"""
+
+    pytestmark = pytest.mark.skipif(not TWELFTH_FIXTURE.is_file(), reason="缺少十二度锁定固件")
+
+    def test_not_locked_to_third_harmonic(self) -> None:
+        frame = loudest_frame(load_wav(TWELFTH_FIXTURE))
+        result = PitchDetector().detect(frame)
+        assert result.valid, "未检测到音高"
+
+        detected_midi = hz_to_midi(result.hz)
+        expected = 45  # A2
+        assert abs(detected_midi - expected) <= TOLERANCE_SEMITONES, (
+            f"第 5 弦锁定到高次谐波：检测 {result.hz:.1f}Hz（MIDI {detected_midi:.1f}），"
+            f"期望 A2（{expected}），偏离 {abs(detected_midi - expected):.1f} 个半音"
+        )
+
+    def test_reported_frequency_is_in_bass_region(self) -> None:
+        """十二度锁定会报 ~318Hz；修复后应落在 90–130Hz。"""
+        frame = loudest_frame(load_wav(TWELFTH_FIXTURE))
+        result = PitchDetector().detect(frame)
+        assert result.valid
+        assert 90.0 < result.hz < 130.0, f"第 5 弦频率异常：{result.hz:.1f}Hz"
 
 
 class TestRealRecording:
