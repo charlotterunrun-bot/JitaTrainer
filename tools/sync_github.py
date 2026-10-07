@@ -22,8 +22,10 @@ import argparse
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -66,23 +68,36 @@ def mask(text: str, token: str) -> str:
 def api(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict | str]:
     url = "https://api.github.com" + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + token)
-    req.add_header("User-Agent", "jitatrainer-sync")
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode("utf-8")
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
+
+    handlers = [urllib.request.ProxyHandler({})]  # 先直连
+    proxy = detect_proxy()
+    delays = (0.0, 2.0, 5.0)
+    last: tuple[int, dict | str] = (0, "未执行")
+
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        # 第二次尝试起改用代理
+        opener = urllib.request.build_opener(*(handlers if index == 0 or not proxy
+                                               else [urllib.request.ProxyHandler({"http": proxy, "https": proxy})]))
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("User-Agent", "jitatrainer-sync")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("Content-Type", "application/json")
         try:
-            return exc.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return exc.code, raw
-    except Exception as exc:  # noqa: BLE001
-        return 0, f"{type(exc).__name__}: {exc}"
+            with opener.open(req, timeout=60) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                return exc.code, json.loads(raw)
+            except json.JSONDecodeError:
+                return exc.code, raw
+        except Exception as exc:  # noqa: BLE001
+            last = (0, f"{type(exc).__name__}: {exc}")
+    return last
 
 
 def ensure_repo(token: str) -> None:
@@ -117,8 +132,28 @@ def ensure_repo(token: str) -> None:
 # --------------------------------------------------------------------------
 # git
 # --------------------------------------------------------------------------
-def git(*args: str, token: str, check: bool = True) -> subprocess.CompletedProcess:
-    """执行 git，通过**环境变量**注入认证头。
+def detect_proxy() -> str | None:
+    """探测可用代理。
+
+    优先级：环境变量 HTTPS_PROXY / HTTP_PROXY → 本机常见的本地代理端口。
+    直连 GitHub 在网络受限环境下会频繁 Connection was reset，走代理更稳。
+    """
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+
+    # 探测本机监听的常见代理端口
+    for port in (7897, 7890, 10809, 10808, 1080, 8080):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.3)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return f"http://127.0.0.1:{port}"
+    return None
+
+
+def git(*args: str, token: str, check: bool = True, proxy: str | None = None) -> subprocess.CompletedProcess:
+    """执行 git，通过**环境变量**注入认证头与代理配置。
 
     为什么不用 credential.helper：
       - 系统默认 helper 是 manager，它需要启动 shell 来提示凭据；
@@ -130,10 +165,19 @@ def git(*args: str, token: str, check: bool = True) -> subprocess.CompletedProce
     """
     auth = base64.b64encode(f"x-access-token:{token}".encode("ascii")).decode("ascii")
     env = os.environ.copy()
-    env["GIT_CONFIG_COUNT"] = "1"
-    env["GIT_CONFIG_KEY_0"] = "http.extraheader"
-    env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {auth}"
     env["GIT_TERMINAL_PROMPT"] = "0"  # 禁止任何交互式提示，失败即失败
+
+    config = [
+        ("http.extraheader", f"Authorization: Basic {auth}"),
+    ]
+    proxy = proxy or detect_proxy()
+    if proxy:
+        config += [("http.proxy", proxy), ("https.proxy", proxy)]
+
+    env["GIT_CONFIG_COUNT"] = str(len(config))
+    for index, (key, value) in enumerate(config):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
 
     cmd = ["git", *args]
     proc = subprocess.run(
@@ -177,8 +221,23 @@ def cmd_push(token: str, branch: str | None = None) -> None:
     ensure_remote(token)
     branch = branch or current_branch(token)
     print(f"推送分支 {branch} 与标签 …")
-    git("push", "-u", "origin", branch, token=token)
-    git("push", "origin", "--tags", token=token)
+
+    # 网络不稳定（Connection was reset / 连接超时）时自动重试
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            git("push", "-u", "origin", branch, token=token)
+            last_error = ""
+            break
+        except SystemExit as exc:  # noqa: PERF203
+            last_error = str(exc)
+            print(f"  第 {attempt} 次推送失败，3 秒后重试 …")
+            time.sleep(3)
+
+    if last_error:
+        raise SystemExit(last_error)
+
+    git("push", "origin", "--tags", token=token, check=False)
     print(f"完成：https://github.com/{OWNER}/{REPO}/tree/{branch}")
 
 
