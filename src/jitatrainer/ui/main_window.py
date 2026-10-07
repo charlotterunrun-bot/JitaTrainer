@@ -18,6 +18,7 @@ from ..practice.session import (
     SessionConfig,
 )
 from .pages.home import HomePage
+from .pages.stats import StatsPage
 from .pages.tuner import TunerPage
 from .pages.wizard import FirstRunWizard
 from .theme import dark_stylesheet
@@ -46,11 +47,15 @@ class MainWindow(QMainWindow):
         self.home.tuner_requested.connect(self.show_tuner)
         self.home.wizard_requested.connect(self.open_wizard)
         self.home.practice_requested.connect(self.start_practice)
+        self.home.stats_requested.connect(self.show_stats)
         self.tuner = TunerPage(self.settings, self.tr)
+        self.stats_page = StatsPage(self.settings, self.tr, profile_id=self.profile_id)
+        self.stats_page.back_requested.connect(self.show_home)
         self.practice = None
 
         self.stack.addWidget(self.home)
         self.stack.addWidget(self.tuner)
+        self.stack.addWidget(self.stats_page)
         self.setCentralWidget(self.stack)
 
         self._build_menu()
@@ -113,6 +118,11 @@ class MainWindow(QMainWindow):
     def show_tuner(self) -> None:
         self._teardown_practice()
         self.stack.setCurrentWidget(self.tuner)
+
+    def show_stats(self) -> None:
+        self._teardown_practice()
+        self.stats_page.refresh()
+        self.stack.setCurrentWidget(self.stats_page)
 
     # ------------------------------------------------------------------ 练习
     def session_config(self) -> SessionConfig:

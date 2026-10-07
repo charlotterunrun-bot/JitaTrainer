@@ -222,6 +222,92 @@ class TestLearningIntegration:
         conn.close()
 
 
+class TestStatsPage:
+    """M4 统计页：渲染与数据绑定（图表是自绘控件，必须真的画一遍）。"""
+
+    def _page(self, tmp_path, tr, app, *, with_data: bool):  # noqa: ARG002
+        from datetime import datetime, timedelta, timezone
+
+        from tests.test_analytics import add_session
+
+        db = Database(tmp_path / "stats.db")
+        db.initialize()
+        conn = db.connect()
+        profile_id = db.list_profiles(conn)[0]["id"]
+        settings = Settings(db, conn, profile_id)
+
+        if with_data:
+            now = datetime.now(timezone.utc) - timedelta(minutes=30)
+            add_session(
+                db,
+                profile_id,
+                started=now,
+                minutes=14.5,
+                attempts=[
+                    (4, "correct", 1200),
+                    (4, "correct", 1500),
+                    (7, "wrong", None),
+                    (7, "correct", 2200),
+                    (9, "wrong", None),
+                    (11, "wrong", None),
+                ],
+            )
+        from jitatrainer.ui.pages.stats import StatsPage
+
+        page = StatsPage(settings, tr, profile_id=profile_id)
+        page.resize(1100, 760)
+        page.refresh()
+        return page, conn
+
+    def test_renders_with_data(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._page(tmp_path, tr, app, with_data=True)
+        pixmap = QPixmap(QSize(1100, 760))
+        page.render(pixmap)
+        assert not pixmap.isNull()
+        # KPI 里应出现累计题量 6
+        texts = [
+            page.kpi_grid.itemAt(i).layout().itemAt(1).widget().text()
+            for i in range(page.kpi_grid.count())
+            if page.kpi_grid.itemAt(i).layout() is not None
+        ]
+        assert "6" in texts
+        conn.close()
+
+    def test_renders_without_data(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._page(tmp_path, tr, app, with_data=False)
+        pixmap = QPixmap(QSize(1100, 760))
+        page.render(pixmap)
+        assert not pixmap.isNull()
+        assert page.weak_label.text() == tr("stats.no_weak")
+        conn.close()
+
+    def test_period_switch(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._page(tmp_path, tr, app, with_data=True)
+        for index in range(page.period_combo.count()):
+            page.period_combo.setCurrentIndex(index)
+            assert page._days in (7, 30, 90)  # noqa: SLF001
+            pixmap = QPixmap(QSize(600, 400))
+            page.render(pixmap)
+            assert not pixmap.isNull()
+        conn.close()
+
+    def test_heatmap_renders_cells(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._page(tmp_path, tr, app, with_data=True)
+        assert page.heatmap._rows, "热力图应有音名行"  # noqa: SLF001
+        assert page.heatmap._cols, "热力图应有把位列"  # noqa: SLF001
+        values = [v for row in page.heatmap._values for v in row if v is not None]  # noqa: SLF001
+        assert values, "应至少有一个训练项的错音数据"
+        conn.close()
+
+    def test_charts_render_line_and_bars(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._page(tmp_path, tr, app, with_data=True)
+        assert page.accuracy_chart._points, "正确率曲线应有数据点"  # noqa: SLF001
+        assert any(value > 0 for _label, value in page.minutes_chart._bars), (  # noqa: SLF001
+            "练习时长柱状图应有数据"
+        )
+        conn.close()
+
+
 class TestDialogs:
     def test_setup_dialog_roundtrip(self, tr, app) -> None:  # noqa: ARG002
         base = SessionConfig(mode=MODE_COUNT, target_count=20, level_id="L2")

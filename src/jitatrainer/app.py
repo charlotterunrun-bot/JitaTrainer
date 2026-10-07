@@ -139,6 +139,32 @@ def run_practice_smoke(window) -> dict[str, object]:  # noqa: ANN001
     }
 
 
+def run_stats_smoke(window) -> dict[str, object]:  # noqa: ANN001
+    """统计页冒烟：确认图表控件在打包环境里能正常绘制。"""
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QPixmap
+
+    from .ui.pages.stats import StatsPage
+
+    page = StatsPage(window.settings, window.tr, profile_id=window.profile_id)
+    page.resize(1100, 760)
+    page.refresh()  # 无数据也不能崩
+    pixmap = QPixmap(QSize(1100, 760))
+    page.render(pixmap)
+
+    # 三种区间都要能切
+    periods = []
+    for index in range(page.period_combo.count()):
+        page.period_combo.setCurrentIndex(index)
+        periods.append(page._days)  # noqa: SLF001
+    return {
+        "ok": not pixmap.isNull(),
+        "rendered": not pixmap.isNull(),
+        "periods": periods,
+        "weak_text": page.weak_label.text(),
+    }
+
+
 def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = False) -> int:
     """离屏自检：验证 Qt、语言包、数据库、音频设备、练习屏。
 
@@ -172,6 +198,12 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
         traceback.print_exc()
         diag["practice_smoke"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    try:
+        diag["stats_smoke"] = run_stats_smoke(window)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        diag["stats_smoke"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     print("=== JitaTrainer 自检 ===")
     for key in (
         "app",
@@ -197,6 +229,7 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
     if isinstance(probe, dict):
         print(f"  {'audio_probe':22} = {probe}")
     print(f"  {'practice_smoke':22} = {diag['practice_smoke']}")
+    print(f"  {'stats_smoke':22} = {diag['stats_smoke']}")
     for level in diag["levels"]:  # type: ignore[union-attr]
         print(f"  级别 {level['id']}: {level['name']}（0-{level['max_fret']} 品）")
 
@@ -220,6 +253,10 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
     if isinstance(smoke, dict) and not smoke.get("ok", False):
         print(f"自检失败：练习屏冒烟未通过 {smoke}")
         return 6
+    stats_smoke = diag.get("stats_smoke")
+    if isinstance(stats_smoke, dict) and not stats_smoke.get("ok", False):
+        print(f"自检失败：统计页冒烟未通过 {stats_smoke}")
+        return 7
 
     print("自检完成：OK")
     return 0

@@ -28,7 +28,12 @@ from .db import Database, utc_now_iso
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    """统一使用 UTC（带 Z）。
+
+    早期版本这里用的是"本地裸时间"，而 sessions / items 用 UTC，
+    会让按天聚合的统计在时区边界上错位。显示时再转本地时间。
+    """
+    return utc_now_iso()
 
 
 class PracticeRepository:

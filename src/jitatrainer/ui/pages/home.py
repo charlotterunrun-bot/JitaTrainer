@@ -24,6 +24,7 @@ class HomePage(QWidget):
     tuner_requested = Signal()
     wizard_requested = Signal()
     practice_requested = Signal(str)  # 模块 id
+    stats_requested = Signal()
 
     def __init__(self, settings: Settings, tr, profile_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +64,17 @@ class HomePage(QWidget):
 
         cards = QHBoxLayout()
         cards.setSpacing(14)
+        cards.addWidget(
+            self._make_card(
+                self.tr("stats.title"),
+                "正确率曲线、反应时间、错音热力图，并可导出 CSV"
+                if self.tr.language == "zh_CN"
+                else "Accuracy trend, reaction time, error heatmap, CSV export",
+                self.tr("common.start"),
+                self.stats_requested.emit,
+            ),
+            1,
+        )
         cards.addWidget(
             self._make_card(
                 self.tr("tuner.title"),

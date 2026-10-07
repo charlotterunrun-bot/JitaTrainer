@@ -169,6 +169,10 @@ def selftest(target: Path, *, probe: bool = False) -> int:
         if smoke:
             mark = "✅" if smoke.get("ok") else "❌"
             print(f"  {'practice_smoke':22} = {mark} {smoke}")
+        stats_smoke = data.get("stats_smoke")
+        if stats_smoke:
+            mark = "✅" if stats_smoke.get("ok") else "❌"
+            print(f"  {'stats_smoke':22} = {mark} {stats_smoke}")
         if not data.get("sounddevice_available"):
             print("⚠ 音频后端不可用：打包产物缺少 sounddevice / PortAudio")
     else:
