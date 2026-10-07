@@ -126,7 +126,7 @@ def directory_size(path: Path) -> int:
     return total
 
 
-def selftest(target: Path) -> int:
+def selftest(target: Path, *, probe: bool = False) -> int:
     """运行产物自检，并读取它写出的报告文件（窗口模式产物没有控制台输出）。"""
     exe = target / f"{APP_NAME}.exe"
     if not exe.is_file():
@@ -137,10 +137,13 @@ def selftest(target: Path) -> int:
     if report.exists():
         report.unlink()
 
-    print(f"\n运行产物自检：{exe} --selftest")
+    argv = [str(exe), "--selftest"]
+    if probe:
+        argv.append("--audio-probe")
+    print(f"\n运行产物自检：{' '.join(argv)}")
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
-    proc = subprocess.run([str(exe), "--selftest"], cwd=target, env=env, timeout=300)
+    proc = subprocess.run(argv, cwd=target, env=env, timeout=300)
     print(f"退出码：{proc.returncode}")
 
     if report.is_file():
@@ -160,6 +163,8 @@ def selftest(target: Path) -> int:
             "input_device_count",
         ):
             print(f"  {key:22} = {data.get(key)}")
+        if data.get("audio_probe"):
+            print(f"  {'audio_probe':22} = {data['audio_probe']}")
         if not data.get("sounddevice_available"):
             print("⚠ 音频后端不可用：打包产物缺少 sounddevice / PortAudio")
     else:
@@ -173,6 +178,7 @@ def main() -> int:
     parser.add_argument("--clean", action="store_true", help="打包前清理旧产物")
     parser.add_argument("--console", action="store_true", help="保留控制台窗口（排查用）")
     parser.add_argument("--no-selftest", action="store_true", help="跳过产物自检")
+    parser.add_argument("--probe", action="store_true", help="产物自检时真正打开麦克风采集一小段")
     parser.add_argument("--name", default=APP_NAME)
     args = parser.parse_args()
 
@@ -188,7 +194,7 @@ def main() -> int:
     if args.no_selftest:
         return 0
 
-    code = selftest(target)
+    code = selftest(target, probe=args.probe)
     print(f"产物自检退出码：{code}")
     return code
 

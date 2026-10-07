@@ -49,6 +49,23 @@ class Tuning:
             raise ValueError("品位不能为负")
         return self.open_midi(string_no) + self.capo_fret + fret
 
+    def nearest_open_string(self, midi: float) -> tuple[int, float]:
+        """给定音高，返回 (最近的弦号, 与空弦的半音差)。
+
+        调音器用它判断"用户当前在调哪根弦"。
+        """
+        best_string = 1
+        best_delta = float("inf")
+        for string_no in range(1, STRING_COUNT + 1):
+            delta = midi - self.open_midi(string_no)
+            if abs(delta) < abs(best_delta):
+                best_string, best_delta = string_no, delta
+        return best_string, best_delta
+
+    def string_target_midi(self, string_no: int) -> int:
+        """某弦空弦的目标音高（不含变调夹，调音时以此为准）。"""
+        return self.open_midi(string_no)
+
 
 STANDARD = Tuning(
     id="standard",

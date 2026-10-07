@@ -15,6 +15,8 @@
   "common.rename": "重命名",
   "common.yes": "是",
   "common.no": "否",
+  "common.start": "开始",
+  "common.stop": "停止",
 
   "home.profiles": "学习档案",
   "home.modules": "练习模块",
@@ -54,6 +56,7 @@
   "practice.source.new": "新题",
 
   "tuner.title": "调音器",
+  "tuner.auto": "自动识别",
   "tuner.target": "目标",
   "tuner.detected": "检测",
   "tuner.in_tune": "准",

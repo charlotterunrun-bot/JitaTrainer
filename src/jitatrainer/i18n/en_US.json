@@ -15,6 +15,8 @@
   "common.rename": "Rename",
   "common.yes": "Yes",
   "common.no": "No",
+  "common.start": "Start",
+  "common.stop": "Stop",
 
   "home.profiles": "Profiles",
   "home.modules": "Practice modules",
@@ -54,6 +56,7 @@
   "practice.source.new": "New",
 
   "tuner.title": "Tuner",
+  "tuner.auto": "Auto detect",
   "tuner.target": "Target",
   "tuner.detected": "Detected",
   "tuner.in_tune": "In tune",
