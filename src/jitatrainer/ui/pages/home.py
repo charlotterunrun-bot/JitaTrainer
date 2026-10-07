@@ -19,10 +19,11 @@ from ...data.settings import Settings
 
 
 class HomePage(QWidget):
-    """M1 版首页。M2 会在这里挂上练习模块卡片。"""
+    """首页：练习模块入口 + 调音器 + 向导。"""
 
     tuner_requested = Signal()
     wizard_requested = Signal()
+    practice_requested = Signal(str)  # 模块 id
 
     def __init__(self, settings: Settings, tr, profile_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -32,6 +33,8 @@ class HomePage(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        from ...practice import registry
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(16)
@@ -44,23 +47,41 @@ class HomePage(QWidget):
         layout.addWidget(subtitle)
         layout.addSpacing(8)
 
+        # 练习模块卡片（新增模块只要注册，首页自动出现）
+        module_row = QHBoxLayout()
+        module_row.setSpacing(14)
+        for module in registry.all_modules():
+            card = self._make_card(
+                module.label(self.tr.language),
+                module.describe(self.tr.language),
+                self.tr("practice.start"),
+                lambda _checked=False, mid=module.id: self.practice_requested.emit(mid),
+            )
+            module_row.addWidget(card, 1)
+        module_row.addStretch(1)
+        layout.addLayout(module_row)
+
         cards = QHBoxLayout()
         cards.setSpacing(14)
-
-        tuner_card = self._make_card(
-            self.tr("tuner.title"),
-            "用麦克风检测六根弦的音高，指针式显示偏差",
-            self.tr("common.start"),
-            self.tuner_requested.emit,
+        cards.addWidget(
+            self._make_card(
+                self.tr("tuner.title"),
+                "用麦克风检测六根弦的音高，指针式显示偏差" if self.tr.language == "zh_CN" else "Detect each string and show the cents offset",
+                self.tr("common.start"),
+                self.tuner_requested.emit,
+            ),
+            1,
         )
-        wizard_card = self._make_card(
-            self.tr("wizard.title"),
-            "选择麦克风、测量环境噪声、试弹校准",
-            self.tr("common.start"),
-            self.wizard_requested.emit,
+        cards.addWidget(
+            self._make_card(
+                self.tr("wizard.title"),
+                "选择麦克风、测量环境噪声、试弹校准" if self.tr.language == "zh_CN" else "Pick a microphone, measure noise, calibrate by playing",
+                self.tr("common.start"),
+                self.wizard_requested.emit,
+            ),
+            1,
         )
-        cards.addWidget(tuner_card, 1)
-        cards.addWidget(wizard_card, 1)
+        cards.addStretch(1)
         layout.addLayout(cards)
 
         self.info_grid = QGridLayout()
@@ -69,7 +90,7 @@ class HomePage(QWidget):
         layout.addLayout(self.info_grid)
         layout.addStretch(1)
 
-        self.hint = QLabel("M1 地基阶段：练习模块将在 M2 里程碑接入。")
+        self.hint = QLabel("M2 进行中：练习屏已接入，记忆曲线调度将在 M3 接入。")
         self.hint.setObjectName("faint")
         layout.addWidget(self.hint)
 

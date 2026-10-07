@@ -166,6 +166,94 @@ class TestTimeout:
         assert all(o.result == RESULT_WRONG for o in outcomes)
 
 
+class TestArming:
+    """回归：残留音与重复判错。
+
+    吉他的一根弦可以响好几秒，比宽容期还长。上一题答对后，那个音还在响，
+    这些"残留帧"曾被喂给下一题并判错（真实缺陷）。修复方式是判定器引入
+    "武装"机制：指定要忽略的音名，直到出现**新拨弦**或**不同音名**才参与判定。
+    """
+
+    def test_ignored_pitch_class_is_not_judged(self) -> None:
+        cfg = JudgeConfig(
+            target_pc=4, grace_ms=0, stable_ms=100, mode=MODE_GRACE, ignore_pitch_class=9
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        # 反复喂上一题残留的音（A），不应产生任何判定
+        tail = [ev(t / 100, hz=A2) for t in range(1, 40)]
+        assert feed_all(judge, tail) == []
+
+    def test_new_onset_arms_the_judge(self) -> None:
+        cfg = JudgeConfig(
+            target_pc=4, grace_ms=0, stable_ms=100, mode=MODE_GRACE, ignore_pitch_class=9
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        assert feed_all(judge, [ev(t / 100, hz=A2) for t in range(1, 20)]) == []
+
+        # 用户重新拨弦（带起音）——弹的还是 A，这次必须判错
+        fresh = [
+            PitchEvent(t=1.0 + i * 0.01, hz=A2, confidence=0.95, is_onset=(i == 0))
+            for i in range(20)
+        ]
+        outcomes = feed_all(judge, fresh)
+        assert outcomes and outcomes[0].result == RESULT_WRONG
+
+    def test_different_pitch_class_arms_without_onset(self) -> None:
+        """没有检测到起音时，弹出**不同音名**也应开始判定。"""
+        cfg = JudgeConfig(
+            target_pc=4, grace_ms=0, stable_ms=100, mode=MODE_GRACE, ignore_pitch_class=9
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        assert feed_all(judge, [ev(t / 100, hz=A2) for t in range(1, 15)]) == []
+        # 换弹 E4（目标音名）→ 应立即判定为正确
+        outcomes = feed_all(judge, [ev(1.0 + i * 0.01, hz=E4) for i in range(20)])
+        assert outcomes and outcomes[0].result == RESULT_CORRECT
+
+    def test_wrong_verdict_requires_new_onset(self) -> None:
+        """同一根还在响的弦不得被反复判错（否则一次弹错会被记成很多次）。"""
+        cfg = JudgeConfig.from_preset("balanced", target_pc=4)
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        first = feed_all(judge, [ev(2.0 + i * 0.01, hz=A2) for i in range(25)])
+        assert len(first) == 1 and first[0].result == RESULT_WRONG
+        assert first[0].attempt_index == 1
+
+        second = feed_all(judge, [ev(3.0 + i * 0.01, hz=A2) for i in range(25)])
+        assert second == [], "同一个持续音被重复判错"
+        assert judge.attempt_index == 2
+
+        third = feed_all(
+            judge,
+            [
+                PitchEvent(t=4.0 + i * 0.01, hz=A2, confidence=0.95, is_onset=(i == 0))
+                for i in range(25)
+            ],
+        )
+        assert len(third) == 1 and third[0].attempt_index == 2
+
+    def test_silence_resets_ignored_pitch_class(self) -> None:
+        """静音足够久说明上一个音已衰减，此时同一音名也应恢复判定。"""
+        cfg = JudgeConfig(
+            target_pc=4,
+            grace_ms=0,
+            stable_ms=100,
+            mode=MODE_GRACE,
+            ignore_pitch_class=9,
+            silence_reset_ms=100,
+            hop_ms=10.0,
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        # 200ms 静音
+        assert feed_all(judge, [PitchEvent(t=i * 0.01, hz=0.0) for i in range(20)]) == []
+        outcomes = feed_all(judge, [ev(1.0 + i * 0.01, hz=A2) for i in range(20)])
+        assert outcomes and outcomes[0].result == RESULT_WRONG
+
+    def test_ignore_is_none_by_default(self) -> None:
+        cfg = JudgeConfig(target_pc=4, grace_ms=0, stable_ms=100)
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        outcomes = feed_all(judge, [ev(t / 100, hz=E4) for t in range(1, 20)])
+        assert outcomes and outcomes[0].result == RESULT_CORRECT
+
+
 class TestModes:
     def test_lenient_mode_does_not_ask_for_feedback(self) -> None:
         cfg = JudgeConfig.from_preset("balanced", target_pc=4, mode=MODE_LENIENT)

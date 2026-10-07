@@ -52,6 +52,10 @@ DEFAULTS: dict[str, str] = {
     "show_note_name": "false",
     "show_pitch_meter": "true",
     "scoring_enabled": "true",
+    # 会话（上一次练习的配置，进入练习时作为默认值）
+    "session_mode": "count",
+    "session_minutes": "15",
+    "session_count": "30",
 }
 
 _TRUE = {"1", "true", "yes", "on", "是"}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtWidgets import QMainWindow, QStackedWidget, QWidget
 
 from .. import __version__
@@ -9,6 +11,12 @@ from ..core.audio import device as device_mod
 from ..data.db import Database
 from ..data.settings import Settings
 from ..i18n import LANGUAGE_LABELS, Translator
+from ..practice.session import (
+    DEFAULT_COUNT,
+    DEFAULT_DURATION_MINUTES,
+    MODE_COUNT,
+    SessionConfig,
+)
 from .pages.home import HomePage
 from .pages.tuner import TunerPage
 from .pages.wizard import FirstRunWizard
@@ -37,7 +45,9 @@ class MainWindow(QMainWindow):
         self.home = HomePage(self.settings, self.tr, self.profile_name)
         self.home.tuner_requested.connect(self.show_tuner)
         self.home.wizard_requested.connect(self.open_wizard)
+        self.home.practice_requested.connect(self.start_practice)
         self.tuner = TunerPage(self.settings, self.tr)
+        self.practice = None
 
         self.stack.addWidget(self.home)
         self.stack.addWidget(self.tuner)
@@ -96,11 +106,108 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 页面
     def show_home(self) -> None:
         self.tuner.leave()
+        self._teardown_practice()
         self.home.refresh()
         self.stack.setCurrentWidget(self.home)
 
     def show_tuner(self) -> None:
+        self._teardown_practice()
         self.stack.setCurrentWidget(self.tuner)
+
+    # ------------------------------------------------------------------ 练习
+    def session_config(self) -> SessionConfig:
+        """从设置还原上次的会话配置。"""
+        return SessionConfig(
+            module_id="pitch_find",
+            mode=self.settings.get("session_mode", MODE_COUNT),
+            target_minutes=self.settings.get_int("session_minutes", DEFAULT_DURATION_MINUTES),
+            target_count=self.settings.get_int("session_count", DEFAULT_COUNT),
+            level_id=self.settings.get("level_id", "L1"),
+            include_accidentals=self.settings.get_bool("include_accidentals", False),
+            scoring_enabled=self.settings.get_bool("scoring_enabled", True),
+            show_note_name=self.settings.get_bool("show_note_name", False),
+        )
+
+    def save_session_config(self, config: SessionConfig) -> None:
+        self.settings.update(
+            {
+                "session_mode": config.mode,
+                "session_minutes": config.target_minutes,
+                "session_count": config.target_count,
+                "level_id": config.level_id,
+                "include_accidentals": config.include_accidentals,
+                "scoring_enabled": config.scoring_enabled,
+                "show_note_name": config.show_note_name,
+            }
+        )
+
+    def start_practice(self, module_id: str = "pitch_find") -> None:
+        from ..practice import registry
+        from .dialogs import SessionSetupDialog
+
+        try:
+            module = registry.get_module(module_id)
+        except KeyError:
+            self.statusBar().showMessage(f"未找到练习模块：{module_id}")
+            return
+
+        base = self.session_config()
+        base = replace(base, module_id=module_id)
+        dialog = SessionSetupDialog(base, self.tr, self)
+        if not dialog.exec():
+            return
+        config = dialog.config()
+        self.save_session_config(config)
+        self._open_practice(config, module)
+
+    def _open_practice(self, config: SessionConfig, module) -> None:  # noqa: ANN001
+        from .pages.practice import PracticePage
+
+        self._teardown_practice()
+        self.tuner.leave()
+        page = PracticePage(
+            self.settings,
+            self.tr,
+            config,
+            module,
+            profile_id=self.profile_id,
+        )
+        page.finished.connect(self._on_practice_finished)
+        page.exit_requested.connect(self.show_home)
+        self.practice = page
+        self.stack.addWidget(page)
+        self.stack.setCurrentWidget(page)
+        page.start()
+        self.statusBar().showMessage(
+            f"{module.label(self.tr.language)} · {config.describe(self.tr.language)}"
+        )
+
+    def _teardown_practice(self) -> None:
+        if self.practice is None:
+            return
+        page, self.practice = self.practice, None
+        page.leave()
+        self.stack.removeWidget(page)
+        page.deleteLater()
+
+    def _on_practice_finished(self, summary) -> None:  # noqa: ANN001
+        from .dialogs import SessionSummaryDialog
+
+        dialog = SessionSummaryDialog(summary, self.tr, self)
+        dialog.exec()
+        if dialog.retry_requested:
+            module = None
+            from ..practice import registry
+
+            try:
+                module = registry.get_module(summary.module_id)
+            except KeyError:
+                pass
+            if module is not None:
+                config = replace(self.session_config(), level_id=summary.level_id)
+                self._open_practice(config, module)
+                return
+        self.show_home()
 
     def switch_language(self, code: str) -> None:
         self.tr.set_language(code)

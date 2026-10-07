@@ -77,13 +77,75 @@ def collect_diagnostics(tr: Translator, *, audio_probe: bool = False) -> dict[st
     return data
 
 
+def run_practice_smoke(window) -> dict[str, object]:  # noqa: ANN001
+    """练习屏冒烟测试：不接麦克风，用合成事件走完一局。
+
+    覆盖 M2 的关键路径：构造练习屏 → 渲染六线谱 → 判定 → 会话小结。
+    打包后的产物自检也会跑这一项。
+    """
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QPixmap
+
+    from .core.audio.events import PitchEvent
+    from .core.theory.notes import midi_to_hz
+    from .practice import registry
+    from .practice.session import MODE_COUNT, SessionConfig
+    from .ui.pages.practice import PracticePage
+
+    module = registry.get_module("pitch_find")
+    config = SessionConfig(mode=MODE_COUNT, target_count=3, level_id="L1")
+    page = PracticePage(window.settings, window.tr, config, module, profile_id=window.profile_id)
+    page.resize(960, 720)
+    page.show()
+
+    page._apply(page.session.start())  # noqa: SLF001 - 冒烟测试直接驱动
+    first = page.session.current_question
+    assert first is not None
+
+    # 渲染六线谱，确保 paintEvent 不抛异常
+    pixmap = QPixmap(QSize(960, 420))
+    page.tab.render(pixmap)
+
+    rendered: list[str] = []
+    # 每题的事件流必须长于"宽容期 + 稳定时长"（默认 2s + 0.2s），否则判定不会触发
+    frames_per_question = 340  # 3.4 秒
+    for index in range(3):
+        question = page.session.current_question
+        if question is None:
+            break
+        hz = midi_to_hz(60 + question.target_pc)
+        for frame in range(frames_per_question):
+            events = page.session.feed(
+                PitchEvent(
+                    t=index * 4.0 + frame * 0.01,
+                    hz=hz,
+                    confidence=0.95,
+                    is_onset=(frame == 0),
+                )
+            )
+            for event in events:
+                rendered.append(event.kind)
+        page._apply([])  # noqa: SLF001
+
+    summary = page.session.build_summary()
+    page.leave()
+    return {
+        "ok": summary.asked == 3 and summary.correct_first == 3,
+        "asked": summary.asked,
+        "correct_first": summary.correct_first,
+        "score": summary.score,
+        "events": rendered[-4:],
+        "tab_rendered": not pixmap.isNull(),
+    }
+
+
 def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = False) -> int:
-    """离屏自检：验证 Qt、语言包、数据库、音频设备枚举与采集。
+    """离屏自检：验证 Qt、语言包、数据库、音频设备、练习屏。
 
     窗口模式产物没有控制台，因此结果同时写入 ``<程序目录>/logs/selftest.json``，
     构建脚本读取该文件判断产物是否真的可用。
 
-    退出码：0 通过；3 音频后端不可用；4 Qt 启动失败；5 音频采集探测失败。
+    退出码：0 通过；3 音频后端不可用；4 Qt 启动失败；5 音频采集探测失败；6 练习屏异常。
     """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     import json
@@ -103,6 +165,12 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
         return 4
 
     diag = collect_diagnostics(tr, audio_probe=audio_probe)
+
+    try:
+        diag["practice_smoke"] = run_practice_smoke(window)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        diag["practice_smoke"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     print("=== JitaTrainer 自检 ===")
     for key in (
@@ -128,6 +196,7 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
     probe = diag.get("audio_probe")
     if isinstance(probe, dict):
         print(f"  {'audio_probe':22} = {probe}")
+    print(f"  {'practice_smoke':22} = {diag['practice_smoke']}")
     for level in diag["levels"]:  # type: ignore[union-attr]
         print(f"  级别 {level['id']}: {level['name']}（0-{level['max_fret']} 品）")
 
@@ -147,6 +216,10 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
     if isinstance(probe, dict) and not probe.get("ok", True):
         print("自检失败：无法打开音频输入流")
         return 5
+    smoke = diag["practice_smoke"]
+    if isinstance(smoke, dict) and not smoke.get("ok", False):
+        print(f"自检失败：练习屏冒烟未通过 {smoke}")
+        return 6
 
     print("自检完成：OK")
     return 0

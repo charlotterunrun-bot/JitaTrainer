@@ -44,6 +44,12 @@ class JudgeConfig:
     min_valid_ratio: float = 0.40
     hop_ms: float = 10.0
     mode: str = MODE_GRACE
+    #: 上一题遗留的持续音（还在响的琴弦）音名。该音名在检测到**新的拨弦**之前
+    #: 不参与判定——否则上一题的音会被当成下一题的答案。
+    #: 这一点很关键：吉他音可以响好几秒，比宽容期还长。
+    ignore_pitch_class: int | None = None
+    #: 静音多久之后清除"忽略音名"（说明上一个音已经衰减完了）
+    silence_reset_ms: int = 300
 
     @classmethod
     def from_preset(cls, preset: str, **kwargs) -> JudgeConfig:
@@ -107,6 +113,14 @@ class PitchClassJudge:
         self._last_signal = self._grace_end
         self._attempt = 1
         self._decided = False
+        #: 是否允许判定。指定了"要忽略的音名"（上一题残留音）时初始为未武装，
+        #: 需等到用户重新拨弦或弹出别的音名才开始判定；判错后同样要求重新拨弦，
+        #: 否则同一根还在响的弦会被反复判错。
+        self._armed = config.ignore_pitch_class is None
+        #: 需要忽略的音名（上一题的残留音 / 上一次判错的音）
+        self._ignored_pc = config.ignore_pitch_class
+        #: 连续静音帧计数：静音足够久说明上一个音已经衰减完，可以解除忽略
+        self._silent_frames = 0
 
     # ------------------------------------------------------------------ 内部
     def _to_reading(self, event: PitchEvent) -> _Reading:
@@ -160,9 +174,12 @@ class PitchClassJudge:
                 feedback=True,
             )
 
-        # 判错：清空窗口，等待用户改正（需求 FR-537：停留直到弹对）
+        # 判错：清空窗口并等待用户重新拨弦（需求 FR-537：停留直到弹对）。
+        # 必须要求"新起音"，否则同一根还在响的弦会被反复判错。
         self._window.clear()
         self._last_signal = now
+        self._armed = False
+        self._ignored_pc = mode_pc
         outcome = JudgeOutcome(
             result=RESULT_WRONG,
             detected_pc=mode_pc,
@@ -181,10 +198,39 @@ class PitchClassJudge:
         if self._decided:
             return None
 
+        # 新拨弦：重新武装判定，并丢弃之前累积的窗口
+        if event.is_onset:
+            self._armed = True
+            self._window.clear()
+            self._ignored_pc = None
+            self._silent_frames = 0
+
         if event.t < self._grace_end:
             return None  # 宽容期：只观察，不判定
 
         reading = self._to_reading(event)
+
+        # 静音足够久 → 上一个音已经衰减，解除忽略（同一音名连续出题时的保障）
+        if reading.pc is None:
+            self._silent_frames += 1
+            if (
+                self._ignored_pc is not None
+                and self._silent_frames * self.config.hop_ms >= self.config.silence_reset_ms
+            ):
+                self._ignored_pc = None
+                self._armed = True
+        else:
+            self._silent_frames = 0
+
+        if not self._armed:
+            # 还在等用户重新拨弦：上一题残留的（或刚判错的）那个音不参与判定。
+            # 若检测到**不同的**音名，说明用户已经弹了别的音，可以开始判定。
+            if reading.pc is not None and reading.pc != self._ignored_pc:
+                self._armed = True
+                self._window.clear()
+            else:
+                return None
+
         self._window.append(reading)
         if reading.pc is not None:
             self._last_signal = event.t
