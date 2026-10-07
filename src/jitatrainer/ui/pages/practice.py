@@ -76,6 +76,7 @@ class PracticePage(QWidget):
             profile_id=profile_id,
         )
         self.audio = None
+        self.recorder = None
         self._timer = QTimer(self)
         self._timer.setInterval(POLL_MS)
         self._timer.timeout.connect(self._poll)
@@ -142,6 +143,7 @@ class PracticePage(QWidget):
 
     # ------------------------------------------------------------------ 生命周期
     def start(self) -> None:
+        self._attach_recorder()
         try:
             self.audio = build_session(self.settings)
             self.audio.start()
@@ -155,11 +157,38 @@ class PracticePage(QWidget):
         self._timer.start()
         self.setFocus()
 
+    def _attach_recorder(self) -> None:
+        """把会话过程写入数据库（失败不影响练习）。"""
+        if self.profile_id is None or self.recorder is not None:
+            return
+        try:
+            from ...data.repository import PracticeRepository, SessionRecorder
+
+            repository = PracticeRepository(self.settings.db, self.profile_id)
+            self.recorder = SessionRecorder(
+                repository,
+                module_id=self.config.module_id,
+                mode=self.config.mode,
+                target_value=(
+                    self.config.target_count
+                    if self.config.mode == "count"
+                    else self.config.target_minutes
+                    if self.config.mode == "duration"
+                    else None
+                ),
+            )
+            self.session.observer = self.recorder
+        except Exception:  # noqa: BLE001
+            self.recorder = None
+
     def stop_audio(self) -> None:
         self._timer.stop()
         if self.audio is not None:
             self.audio.stop()
             self.audio = None
+        if self.recorder is not None:
+            self.recorder.close()
+            self.recorder = None
 
     def leave(self) -> None:
         self.stop_audio()

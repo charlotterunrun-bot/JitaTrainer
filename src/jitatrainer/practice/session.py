@@ -202,6 +202,19 @@ class PracticeSession:
         #: 上一个判定到的音名。吉他的音能响好几秒（比宽容期还长），
         #: 因此新题开始时要告诉判定器"这个音是上一题残留的，别当答案"。
         self._ignore_pc: int | None = None
+        #: 会话事件观察者（例如 ``data.repository.SessionRecorder``）。
+        #: 观察者抛异常不得影响练习，因此统一包一层。
+        self.observer: Callable[[SessionEvent], None] | None = None
+
+    # ------------------------------------------------------------------ 事件分发
+    def _emit(self, events: list[SessionEvent]) -> list[SessionEvent]:
+        if self.observer is not None:
+            for event in events:
+                try:
+                    self.observer(event)
+                except Exception:  # noqa: BLE001 - 记录失败不得中断练习
+                    pass
+        return events
 
     # ------------------------------------------------------------------ 状态
     @property
@@ -252,7 +265,7 @@ class PracticeSession:
         self._started_at = self.clock()
         events = [SessionEvent(kind=EVENT_STARTED)]
         events.extend(self._next_question())
-        return events
+        return self._emit(events)
 
     def pause(self) -> None:
         if self._paused or self.is_finished:
@@ -286,7 +299,7 @@ class PracticeSession:
         self._ignore_pc = None
         events = [SessionEvent(kind=EVENT_SKIPPED, question=self._question)]
         events.extend(self._maybe_finish_or_next())
-        return events
+        return self._emit(events)
 
     def tick(self) -> list[SessionEvent]:
         """按时间推进（固定时长模式到点结束）。由 UI 定时器调用。"""
@@ -303,7 +316,7 @@ class PracticeSession:
         summary = self.build_summary()
         self._question = None
         self._judge = None
-        return [SessionEvent(kind=EVENT_FINISHED, summary=summary)]
+        return self._emit([SessionEvent(kind=EVENT_FINISHED, summary=summary)])
 
     def build_summary(self) -> SessionSummary:
         return SessionSummary(
@@ -342,11 +355,11 @@ class PracticeSession:
             return []
 
         if outcome.result == RESULT_CORRECT:
-            return self._on_correct(outcome)
+            return self._emit(self._on_correct(outcome))
         if outcome.result == RESULT_WRONG:
-            return self._on_wrong(outcome)
+            return self._emit(self._on_wrong(outcome))
         if outcome.result == RESULT_TIMEOUT:
-            return self._on_timeout(outcome)
+            return self._emit(self._on_timeout(outcome))
         return []
 
     # ------------------------------------------------------------------ 内部
