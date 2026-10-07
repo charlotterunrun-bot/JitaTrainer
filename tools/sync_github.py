@@ -12,12 +12,14 @@
 
 凭据：
     优先读取环境变量 GITHUB_TOKEN，其次读取 .secrets/github_token.txt。
-    令牌**永远不会**被打印；git 推送使用一次性的凭据文件（同样位于 .secrets/ 内）。
+    令牌**永远不会**被打印，也不写入 .git/config：推送时通过一次性的
+    GIT_CONFIG_* 环境变量注入认证头（详见 git() 的说明）。
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -33,7 +35,6 @@ DESCRIPTION = "吉他训练器 / Guitar fretboard & ear trainer (Windows, Python
 ROOT = Path(__file__).resolve().parent.parent
 SECRET_DIR = ROOT / ".secrets"
 TOKEN_FILE = SECRET_DIR / "github_token.txt"
-CRED_FILE = SECRET_DIR / ".git-credentials"
 REMOTE_URL = f"https://github.com/{OWNER}/{REPO}.git"
 
 
@@ -117,26 +118,35 @@ def ensure_repo(token: str) -> None:
 # git
 # --------------------------------------------------------------------------
 def git(*args: str, token: str, check: bool = True) -> subprocess.CompletedProcess:
-    """执行 git；使用一次性凭据文件，令牌不出现在命令行与 .git/config 中。"""
-    SECRET_DIR.mkdir(parents=True, exist_ok=True)
-    CRED_FILE.write_text(
-        f"https://x-access-token:{token}@github.com\n", encoding="ascii"
-    )
-    try:
-        os.chmod(CRED_FILE, 0o600)
-    except OSError:
-        pass
+    """执行 git，通过**环境变量**注入认证头。
 
-    cmd = [
-        "git",
-        "-c",
-        f"credential.helper=store --file={CRED_FILE.as_posix()}",
-        *args,
-    ]
+    为什么不用 credential.helper：
+      - 系统默认 helper 是 manager，它需要启动 shell 来提示凭据；
+      - 在受限沙箱中 git 无法创建管道，任何走 shell 的凭据助手都会失败。
+    因此改为把 `http.extraheader` 通过 GIT_CONFIG_* 环境变量传入：
+      - 令牌不进入命令行参数（不会出现在进程列表里）
+      - 令牌不写入 .git/config、不落盘任何凭据文件
+      - 只对这一次 git 调用生效
+    """
+    auth = base64.b64encode(f"x-access-token:{token}".encode("ascii")).decode("ascii")
+    env = os.environ.copy()
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.extraheader"
+    env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {auth}"
+    env["GIT_TERMINAL_PROMPT"] = "0"  # 禁止任何交互式提示，失败即失败
+
+    cmd = ["git", *args]
     proc = subprocess.run(
-        cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        cmd,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
     )
-    out = mask((proc.stdout or "") + (proc.stderr or ""), token).strip()
+    raw = (proc.stdout or "") + (proc.stderr or "")
+    out = mask(raw, token).replace(auth, "***").strip()
     if check and proc.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} 失败（exit {proc.returncode}）：\n{out}")
     return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
