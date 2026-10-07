@@ -35,7 +35,7 @@ compat.install()
 
 from jitatrainer.core.audio.device import list_input_devices  # noqa: E402
 from jitatrainer.core.audio.gate import frame_rms_db  # noqa: E402
-from jitatrainer.core.audio.pitch_yin import PitchDetector  # noqa: E402
+from jitatrainer.core.audio.pitch_yin import PitchDetector, YinConfig  # noqa: E402
 from jitatrainer.core.theory.notes import hz_to_midi, midi_name  # noqa: E402
 
 SAMPLERATE = 48000
@@ -91,11 +91,17 @@ def record(seconds: float, device: int | None, out: Path, lead_in: float = 0.0) 
     return out
 
 
-def load_wav(path: Path) -> np.ndarray:
+def load_wav(path: Path) -> tuple[np.ndarray, int]:
+    """读取 WAV，返回 (样本, 采样率)。
+
+    采样率必须从文件头读取：不同设备录出来可能是 44100 或 48000，
+    若按固定采样率分析，频率会被整体缩放（44100 当 48000 用会偏高约 147 音分）。
+    """
     with wave.open(str(path), "rb") as handle:
         frames = handle.readframes(handle.getnframes())
         width = handle.getsampwidth()
         channels = handle.getnchannels()
+        samplerate = handle.getframerate()
     dtype = {2: "<i2", 4: "<i4"}.get(width)
     if dtype is None:
         raise SystemExit(f"不支持的位深：{width * 8} 位")
@@ -106,12 +112,11 @@ def load_wav(path: Path) -> np.ndarray:
         data /= 2147483648.0
     if channels > 1:
         data = data.reshape(-1, channels)[:, 0]
-    return data
+    return data, samplerate
 
 
-def analyze(path: Path, samplerate: int = SAMPLERATE) -> int:
-    samples = load_wav(path)
-    detector = PitchDetector()
+def analyze(samples: np.ndarray, samplerate: int) -> int:
+    detector = PitchDetector(YinConfig(samplerate=samplerate, window=WINDOW))
 
     readings: list[tuple[float, float, int]] = []
     for start in range(0, max(0, samples.size - WINDOW), HOP):
@@ -125,7 +130,7 @@ def analyze(path: Path, samplerate: int = SAMPLERATE) -> int:
             readings.append((start / samplerate, result.hz, result.pitch_class))
 
     if not readings:
-        print(f"{path.name}：未检测到有效音高（可能是静音或噪声）")
+        print("未检测到有效音高（可能是静音或噪声）")
         return 1
 
     counts: dict[int, int] = {}
@@ -138,7 +143,7 @@ def analyze(path: Path, samplerate: int = SAMPLERATE) -> int:
     nearest_midi = round(dominant_midi)
     cents_offset = 100.0 * (dominant_midi - nearest_midi)
 
-    print(f"\n{path.name} 分析结果")
+    print(f"\n分析结果（采样率 {samplerate}Hz）")
     print(f"  有效帧 {len(readings)} / 总时长 {samples.size / samplerate:.2f}s")
     print(
         f"  主音：{midi_name(nearest_midi)}（音名序号 {dominant_pc}），"
@@ -161,9 +166,10 @@ def analyze_segments(samples: np.ndarray, samplerate: int = SAMPLERATE, min_fram
     """把一段录音切成"稳定的音"的序列，用于识别依次拨响的六根弦。
 
     门限自适应：取全曲电平的 20 分位数作为噪声地板，+12dB 作为门限，
-    这样无论录音偏轻还是偏响都能正常工作。
+    这样无论录音偏轻还是偏响都能正常工作。采样率从文件头读取，
+    检测器按实际采样率构造。
     """
-    detector = PitchDetector()
+    detector = PitchDetector(YinConfig(samplerate=samplerate, window=WINDOW))
 
     levels: list[float] = []
     frames: list[tuple[float, float | None]] = []
@@ -211,7 +217,7 @@ def analyze_segments(samples: np.ndarray, samplerate: int = SAMPLERATE, min_fram
     return [{"gate_db": round(gate, 1), "floor_db": round(floor, 1)}, *segments]
 
 
-def _summarize_segment(items: list[tuple[float, float]]) -> dict:
+def _summarize_segment(items: list[tuple[float, float]], samplerate: int = SAMPLERATE) -> dict:
     times = [t for t, _ in items]
     hz_values = [hz for _, hz in items]
     median_hz = float(np.median(hz_values))
@@ -219,7 +225,7 @@ def _summarize_segment(items: list[tuple[float, float]]) -> dict:
     nearest = round(midi)
     return {
         "start": round(min(times), 2),
-        "end": round(max(times) + HOP / SAMPLERATE, 2),
+        "end": round(max(times) + HOP / samplerate, 2),
         "frames": len(items),
         "note": midi_name(nearest),
         "hz": round(median_hz, 2),
@@ -228,14 +234,14 @@ def _summarize_segment(items: list[tuple[float, float]]) -> dict:
 
 
 def report_segments(path: Path) -> int:
-    samples = load_wav(path)
-    segments = analyze_segments(samples)
+    samples, samplerate = load_wav(path)
+    segments = analyze_segments(samples, samplerate)
     if not segments:
         print(f"\n{path.name}：未检测到任何稳定音")
         return 1
 
     meta = segments[0]
-    print(f"\n{path.name} 分段识别结果")
+    print(f"\n{path.name} 分段识别结果（采样率 {samplerate}Hz）")
     print(f"  噪声地板 {meta['floor_db']} dB，门限 {meta['gate_db']} dB")
     print(f"  共识别到 {len(segments) - 1} 个稳定音：\n")
     print("  #  起始    持续    音名     频率(Hz)   音分偏差")
@@ -270,13 +276,20 @@ def main() -> int:
     if args.analyze is not None:
         if not args.analyze.is_file():
             raise SystemExit(f"文件不存在：{args.analyze}")
-        return report_segments(args.analyze) if args.segments else analyze(args.analyze)
+        if args.segments:
+            return report_segments(args.analyze)
+        samples, samplerate = load_wav(args.analyze)
+        print(f"{args.analyze.name}（采样率 {samplerate}Hz）")
+        return analyze(samples, samplerate)
 
     out = args.out or (ROOT / "tests" / "fixtures" / "capture.wav")
     if args.label:
         print(f"本次录音：{args.label}")
     path = record(args.seconds, args.device, out, lead_in=args.lead_in)
-    return report_segments(path) if args.segments else analyze(path)
+    if args.segments:
+        return report_segments(path)
+    samples, samplerate = load_wav(path)
+    return analyze(samples, samplerate)
 
 
 if __name__ == "__main__":
