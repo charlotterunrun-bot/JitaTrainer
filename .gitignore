@@ -1,0 +1,53 @@
+# ============================================================
+# JitaTrainer .gitignore
+# 原则：绝不把凭据、运行期数据、构建产物提交进仓库
+# ============================================================
+
+# --- 凭据与本地私有文件（最高优先级，绝不入库） ---
+.secrets/
+.tmp/
+*.local.json
+*.local.toml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- 构建产物 ---
+build/
+dist/
+release/
+*.spec.bak
+*.manifest
+
+# --- 运行期数据（绿色版数据目录，绝不入库） ---
+data/
+logs/
+**/jitatrainer.db
+**/jitatrainer.db-wal
+**/jitatrainer.db-shm
+**/backups/
+**/exports/
+*.log
+
+# --- 编辑器与系统 ---
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+desktop.ini

@@ -1,0 +1,28 @@
+# 统一换行符，避免 Windows 与 CI 之间产生无意义的差异
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+
+# 二进制文件不做转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.so binary
+*.dylib binary
+*.db binary
+*.zip binary
+*.whl binary
+
+# 语言统计用：文档标记为文档类型
+*.md linguist-documentation
+docs/** linguist-documentation
