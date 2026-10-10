@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,9 +13,13 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QListWidget,
+    QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -173,6 +177,330 @@ class SessionSetupDialog(QDialog):
             timeout_seconds=float(self.timeout_spin.value()),
             grace_seconds=float(self.grace_spin.value()),
         )
+
+
+class ProfileManagerDialog(QDialog):
+    """账号与吉他档案管理。
+
+    两个标签页：
+
+    - **学习者账号**：新建 / 重命名 / 删除 / 设为当前。练习记录、记忆曲线、统计
+      都按账号隔离，换账号等于换一个人练。
+    - **吉他档案**：列出已保存的乐器配置档案，可测量新建、设为当前、重命名、删除、查看。
+
+    对话框只负责"改了什么"，具体切换由主窗口执行（它要重载设置、首页与统计页）。
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        tr,
+        *,
+        current_profile_id: int | None = None,
+        current_instrument_path: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.settings = settings
+        self.tr = tr
+        self.current_profile_id = current_profile_id
+        self.current_instrument_path = current_instrument_path
+        #: 用户在本次对话框里做出的选择（未改动则为 None）
+        self.selected_learner_id: int | None = None
+        self.selected_instrument_path: str | None = None
+        self._instrument_changed = False
+
+        self.setWindowTitle(tr("accounts.title"))
+        self.setMinimumSize(560, 420)
+        self._build_ui()
+        self.reload()
+
+    # ------------------------------------------------------------------ 界面
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+
+        # --- 学习者账号 ---
+        learner = QWidget()
+        learner_layout = QHBoxLayout(learner)
+        self.learner_list = QListWidget()
+        learner_layout.addWidget(self.learner_list, 1)
+        learner_buttons = QVBoxLayout()
+        self.new_learner_button = QPushButton(self.tr("accounts.new_learner"))
+        self.new_learner_button.clicked.connect(self.create_learner)
+        self.rename_learner_button = QPushButton(self.tr("accounts.rename"))
+        self.rename_learner_button.clicked.connect(self.rename_learner)
+        self.delete_learner_button = QPushButton(self.tr("accounts.delete"))
+        self.delete_learner_button.clicked.connect(self.delete_learner)
+        self.use_learner_button = QPushButton(self.tr("accounts.use"))
+        self.use_learner_button.setObjectName("primary")
+        self.use_learner_button.clicked.connect(self.use_learner)
+        for button in (
+            self.new_learner_button,
+            self.rename_learner_button,
+            self.delete_learner_button,
+            self.use_learner_button,
+        ):
+            learner_buttons.addWidget(button)
+        learner_buttons.addStretch(1)
+        learner_layout.addLayout(learner_buttons)
+        self.tabs.addTab(learner, self.tr("accounts.tab_learners"))
+
+        # --- 吉他档案 ---
+        instrument = QWidget()
+        instrument_layout = QHBoxLayout(instrument)
+        self.instrument_list = QListWidget()
+        instrument_layout.addWidget(self.instrument_list, 1)
+        instrument_buttons = QVBoxLayout()
+        self.measure_button = QPushButton(self.tr("accounts.measure_new"))
+        self.measure_button.clicked.connect(self.measure_new)
+        self.use_instrument_button = QPushButton(self.tr("accounts.use"))
+        self.use_instrument_button.setObjectName("primary")
+        self.use_instrument_button.clicked.connect(self.use_instrument)
+        self.rename_instrument_button = QPushButton(self.tr("accounts.rename"))
+        self.rename_instrument_button.clicked.connect(self.rename_instrument)
+        self.delete_instrument_button = QPushButton(self.tr("accounts.delete"))
+        self.delete_instrument_button.clicked.connect(self.delete_instrument)
+        self.show_instrument_button = QPushButton(self.tr("instrument.show"))
+        self.show_instrument_button.clicked.connect(self.show_instrument)
+        for button in (
+            self.measure_button,
+            self.use_instrument_button,
+            self.rename_instrument_button,
+            self.delete_instrument_button,
+            self.show_instrument_button,
+        ):
+            instrument_buttons.addWidget(button)
+        instrument_buttons.addStretch(1)
+        instrument_layout.addLayout(instrument_buttons)
+        self.tabs.addTab(instrument, self.tr("accounts.tab_instruments"))
+
+        layout.addWidget(self.tabs)
+
+        self.hint = QLabel(self.tr("accounts.hint"))
+        self.hint.setObjectName("faint")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(self.tr("common.close"))
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    # ------------------------------------------------------------------ 列表
+    def reload(self) -> None:
+        self._reload_learners()
+        self._reload_instruments()
+
+    def _reload_learners(self) -> None:
+        from ..data.db import Database
+
+        self.learner_list.clear()
+        rows = Database.list_profiles(self.settings.conn)
+        total = len(rows)
+        for row in rows:
+            profile_id = int(row["id"])
+            name = str(row["name"])
+            label = name
+            if profile_id == (self.selected_learner_id or self.current_profile_id):
+                label = f"● {name}"
+            self.learner_list.addItem(label)
+            item = self.learner_list.item(self.learner_list.count() - 1)
+            item.setData(Qt.ItemDataRole.UserRole, profile_id)
+            if profile_id == (self.selected_learner_id or self.current_profile_id):
+                self.learner_list.setCurrentItem(item)
+        # 只剩一个账号时不允许删除，避免把自己锁在外面
+        self.delete_learner_button.setEnabled(total > 1)
+
+    def _reload_instruments(self) -> None:
+        from ..core.instrument import list_saved_profiles
+
+        self.instrument_list.clear()
+        active = self.selected_instrument_path or self.current_instrument_path
+        for path, profile in list_saved_profiles():
+            label = profile.name
+            if profile.is_measured:
+                label += "（已实测）"
+            if active and str(path) == active:
+                label = f"● {label}"
+            self.instrument_list.addItem(label)
+            item = self.instrument_list.item(self.instrument_list.count() - 1)
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            if active and str(path) == active:
+                self.instrument_list.setCurrentItem(item)
+
+    # ------------------------------------------------------------------ 学习者
+    def create_learner(self) -> None:
+        from ..data.db import Database
+
+        name, ok = QInputDialog.getText(
+            self, self.tr("accounts.new_learner"), self.tr("accounts.name_prompt")
+        )
+        if not ok or not name.strip():
+            return
+        Database.create_profile(self.settings.conn, name.strip())
+        self._reload_learners()
+
+    def rename_learner(self) -> None:
+        from ..data.db import Database
+
+        profile_id = self._current_learner_id()
+        if profile_id is None:
+            return
+        row = self.settings.conn.execute(
+            "SELECT name FROM profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+        old = str(row["name"]) if row else ""
+        name, ok = QInputDialog.getText(
+            self, self.tr("accounts.rename"), self.tr("accounts.name_prompt"), text=old
+        )
+        if not ok or not name.strip():
+            return
+        Database.rename_profile(self.settings.conn, profile_id, name.strip())
+        self._reload_learners()
+
+    def delete_learner(self) -> None:
+        from ..data.db import Database
+
+        profile_id = self._current_learner_id()
+        if profile_id is None:
+            return
+        rows = Database.list_profiles(self.settings.conn)
+        if len(rows) <= 1:
+            QMessageBox.information(
+                self, self.tr("accounts.delete"), self.tr("accounts.cannot_delete_last")
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("accounts.delete"),
+            self.tr("accounts.confirm_delete_learner"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if profile_id == self.current_profile_id:
+            # 删的是当前账号：自动切到剩下的第一个
+            remaining = [int(row["id"]) for row in rows if int(row["id"]) != profile_id]
+            self.selected_learner_id = remaining[0] if remaining else None
+        Database.delete_profile(self.settings.conn, profile_id)
+        self._reload_learners()
+
+    def use_learner(self) -> None:
+        profile_id = self._current_learner_id()
+        if profile_id is None:
+            return
+        self.selected_learner_id = profile_id
+        self._reload_learners()
+
+    def _current_learner_id(self) -> int | None:
+        item = self.learner_list.currentItem()
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return int(value) if value is not None else None
+
+    # ------------------------------------------------------------------ 吉他
+    def measure_new(self) -> None:
+        """测量一把新吉他并保存为档案。"""
+        dialog = MeasureGuitarDialog(self.settings, self.tr, self)
+        dialog.exec()
+        if dialog.saved_path is not None:
+            self.selected_instrument_path = str(dialog.saved_path)
+            self._instrument_changed = True
+            self._reload_instruments()
+
+    def use_instrument(self) -> None:
+        path = self._current_instrument_path()
+        if path is None:
+            return
+        self.selected_instrument_path = path
+        self._instrument_changed = True
+        self._reload_instruments()
+
+    def rename_instrument(self) -> None:
+        from ..core.instrument import ProfileError, rename_saved_profile
+
+        path = self._current_instrument_path()
+        if path is None:
+            return
+        from ..core.instrument import load_profile
+
+        try:
+            current = load_profile(path)
+        except ProfileError as exc:
+            QMessageBox.warning(self, self.tr("accounts.rename"), str(exc))
+            return
+        name, ok = QInputDialog.getText(
+            self, self.tr("accounts.rename"), self.tr("accounts.name_prompt"), text=current.name
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            new_path = rename_saved_profile(path, name.strip())
+        except ProfileError as exc:
+            QMessageBox.warning(self, self.tr("accounts.rename"), str(exc))
+            return
+        if self.current_instrument_path == path or self.selected_instrument_path == path:
+            self.selected_instrument_path = str(new_path)
+            self._instrument_changed = True
+        self._reload_instruments()
+
+    def delete_instrument(self) -> None:
+        from ..core.instrument import delete_saved_profile
+
+        path = self._current_instrument_path()
+        if path is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("accounts.delete"),
+            self.tr("accounts.confirm_delete_instrument"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        delete_saved_profile(path)
+        if self.current_instrument_path == path:
+            # 删的是当前档案：回到内置标准档案
+            self.selected_instrument_path = ""
+            self._instrument_changed = True
+        self._reload_instruments()
+
+    def show_instrument(self) -> None:
+        from ..core.instrument import ProfileError, load_profile, summarise
+
+        path = self._current_instrument_path()
+        if path is None:
+            return
+        try:
+            profile = load_profile(path)
+        except ProfileError as exc:
+            QMessageBox.warning(self, self.tr("instrument.show"), str(exc))
+            return
+        lines = [summarise(profile), ""]
+        for spec in profile.strings:
+            measured = f"{spec.measured_hz:.2f} Hz" if spec.measured_hz else "—"
+            cents = f"{spec.offset_cents:+.1f} 音分" if spec.offset_cents is not None else "—"
+            lines.append(f"  第{spec.number}弦 {spec.note_name:>3}  实测 {measured:>10}  {cents}")
+        lines.append("")
+        lines.append(f"{self.tr('instrument.mode')}：{profile.detection.harmonic_mode}")
+        if profile.notes:
+            lines.append(profile.notes)
+        QMessageBox.information(self, self.tr("instrument.show"), "\n".join(lines))
+
+    def _current_instrument_path(self) -> str | None:
+        item = self.instrument_list.currentItem()
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return str(value) if value else None
+
+    @property
+    def instrument_changed(self) -> bool:
+        return self._instrument_changed
 
 
 class MeasureGuitarDialog(QDialog):

@@ -300,25 +300,44 @@ def run_selftest(tr: Translator, *, report: bool = True, audio_probe: bool = Fal
 
     if not diag["sounddevice_available"]:
         print("自检失败：音频后端不可用（sounddevice 未能导入）")
-        return 3
+        return _finish_selftest(3)
     if isinstance(probe, dict) and not probe.get("ok", True):
         print("自检失败：无法打开音频输入流")
-        return 5
+        return _finish_selftest(5)
     smoke = diag["practice_smoke"]
     if isinstance(smoke, dict) and not smoke.get("ok", False):
         print(f"自检失败：练习屏冒烟未通过 {smoke}")
-        return 6
+        return _finish_selftest(6)
     stats_smoke = diag.get("stats_smoke")
     if isinstance(stats_smoke, dict) and not stats_smoke.get("ok", False):
         print(f"自检失败：统计页冒烟未通过 {stats_smoke}")
-        return 7
+        return _finish_selftest(7)
     audio_smoke = diag.get("audio_thread_smoke")
     if isinstance(audio_smoke, dict) and not audio_smoke.get("ok", False):
         print(f"自检失败：音频分析线程冒烟未通过 {audio_smoke}")
-        return 8
+        return _finish_selftest(8)
 
     print("自检完成：OK")
-    return 0
+    return _finish_selftest(0)
+
+
+def _finish_selftest(code: int) -> int:
+    """结束自检并**强制退出进程**。
+
+    为什么不能只 return：这是给打包脚本用的一次性冒烟入口，而 PortAudio 在 Windows 上
+    可能留下原生线程把进程吊住。实测出现过"自检打完了但进程还活着"，结果
+    ``dist\\...\\data\\jitatrainer.db`` 被锁住、下一次打包清理旧产物时失败。
+
+    自检不做任何需要优雅收尾的事（报告已写入、窗口已关闭），因此直接 ``os._exit``。
+    正常 GUI 启动路径不受影响。
+    """
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    os._exit(code)
+    return code  # pragma: no cover - 到不了这里
 
 
 def main(argv: list[str] | None = None) -> int:

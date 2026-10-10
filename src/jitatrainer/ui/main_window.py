@@ -108,6 +108,11 @@ class MainWindow(QMainWindow):
         wizard_action = menu.addAction(self.tr("wizard.title"))
         wizard_action.triggered.connect(self.open_wizard)
 
+        # 账号与档案（学习者账号 + 吉他档案）
+        accounts_menu = self.menuBar().addMenu(self.tr("accounts.menu"))
+        manage_action = accounts_menu.addAction(self.tr("accounts.title"))
+        manage_action.triggered.connect(self.open_profile_manager)
+
         # 数据菜单（需求 FR-1000：打开数据目录 / 立即备份 / 导入导出）
         data_menu = self.menuBar().addMenu(self.tr("settings.data_menu"))
         open_dir = data_menu.addAction(self.tr("settings.open_data_dir"))
@@ -347,7 +352,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self.tr("settings.clear_done"))
 
     def switch_profile(self, profile_id: int) -> None:
-        """切换当前档案（导入后使用）。"""
+        """切换当前学习者账号。
+
+        账号之间完全隔离：设置、训练项、会话、统计都按 profile_id 取，
+        因此切换后要把设置访问器、首页与统计页一起更新，并记住"上次使用的账号"。
+        """
         self.profile_id = profile_id
         with self.settings.db.connect() as conn:
             conn.execute(
@@ -358,10 +367,38 @@ class MainWindow(QMainWindow):
             row = conn.execute("SELECT name FROM profiles WHERE id = ?", (profile_id,)).fetchone()
         self.profile_name = str(row["name"]) if row else self.profile_name
         self.settings.profile_id = profile_id
+        self.db.set_app_setting(self.settings.conn, "last_profile_id", str(profile_id))
+        self.home.profile_id = profile_id
         self.home.profile_name = self.profile_name
         self.stats_page.profile_id = profile_id
         self.stats_page.repository.profile_id = profile_id
         self.show_home()
+
+    # ------------------------------------------------------------------ 账号与档案
+    def open_profile_manager(self) -> None:
+        """打开账号与吉他档案管理。"""
+        from .dialogs import ProfileManagerDialog
+
+        dialog = ProfileManagerDialog(
+            self.settings,
+            self.tr,
+            current_profile_id=self.profile_id,
+            current_instrument_path=self.settings.get("instrument_profile", ""),
+            parent=self,
+        )
+        dialog.exec()
+
+        if dialog.selected_instrument_path is not None and dialog.instrument_changed:
+            self.settings.set("instrument_profile", dialog.selected_instrument_path)
+            self._refresh_instrument_status()
+            self.statusBar().showMessage(self.tr("accounts.instrument_switched"))
+
+        if (
+            dialog.selected_learner_id is not None
+            and dialog.selected_learner_id != self.profile_id
+        ):
+            self.switch_profile(dialog.selected_learner_id)
+            self.statusBar().showMessage(self.tr("accounts.switched", name=self.profile_name))
 
     # ------------------------------------------------------------------ 页面
     def show_home(self) -> None:

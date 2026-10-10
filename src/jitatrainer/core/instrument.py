@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -420,6 +420,54 @@ def list_profiles(directory: Path | str) -> list[Path]:
     if not folder.is_dir():
         return []
     return sorted(folder.glob("*.json"))
+
+
+def profiles_directory() -> Path:
+    """乐器档案的默认目录（``data/instruments``）。"""
+    from ..paths import data_dir
+
+    return data_dir() / "instruments"
+
+
+def list_saved_profiles() -> list[tuple[Path, InstrumentProfile]]:
+    """列出已保存的乐器档案。坏文件跳过而不是让整个列表失败。"""
+    result: list[tuple[Path, InstrumentProfile]] = []
+    for path in list_profiles(profiles_directory()):
+        try:
+            result.append((path, load_profile(path)))
+        except ProfileError:
+            continue
+    result.sort(key=lambda item: item[1].name)
+    return result
+
+
+def rename_saved_profile(path: Path | str, new_name: str) -> Path:
+    """改名（同时改 id 与文件名，避免名字与文件对不上）。"""
+    source = Path(path)
+    profile = load_profile(source)
+    cleaned = new_name.strip()
+    if not cleaned:
+        raise ProfileError("名称不能为空")
+    renamed = replace(profile, name=cleaned)
+    target = source.parent / f"{_safe_filename(cleaned)}.json"
+    save_profile(renamed, target)
+    if target != source and source.exists():
+        source.unlink()
+    return target
+
+
+def delete_saved_profile(path: Path | str) -> bool:
+    """删除档案文件。文件不存在返回 False。"""
+    target = Path(path)
+    if not target.is_file():
+        return False
+    target.unlink()
+    return True
+
+
+def _safe_filename(name: str) -> str:
+    safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip()
+    return safe or "profile"
 
 
 # ---------------------------------------------------------------------------
@@ -820,11 +868,15 @@ __all__ = [
     "StringSpec",
     "check_detection",
     "check_measurements",
+    "delete_saved_profile",
     "detection_settings_from_profile",
     "list_profiles",
+    "list_saved_profiles",
     "load_profile",
     "profile_from_measurements",
     "profile_from_tuning",
+    "profiles_directory",
+    "rename_saved_profile",
     "resolve_hz",
     "save_profile",
     "standard_profile",
