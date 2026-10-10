@@ -39,6 +39,7 @@ from ...practice.session import (
     SessionSummary,
 )
 from ..audio_bridge import build_session
+from ..widgets.countdown import CountdownBar
 from ..widgets.notation_tab import NotationTab
 from ..widgets.pitch_meter import PitchMeter
 
@@ -87,6 +88,10 @@ class PracticePage(QWidget):
         #: 而不是默默按某个猜测处理（需求：声音不符预期时提示用户）。
         self._unexplained_run = 0
         self._env_warned = False
+        #: PitchEvent.t 与 time.monotonic() 是两个时间基。倒计时需要换算：
+        #: 记下最近一次事件的时间戳与当时的挂钟，用它外推"现在是事件时间基上的几秒"。
+        self._last_event_t: float | None = None
+        self._last_event_wall = 0.0
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._build_ui()
@@ -110,8 +115,13 @@ class PracticePage(QWidget):
 
         self.pause_button = QPushButton(self.tr("practice.pause"))
         self.pause_button.clicked.connect(self.toggle_pause)
-        self.skip_button = QPushButton(self.tr("practice.skip"))
-        self.skip_button.clicked.connect(self.skip_question)
+        # 手动推进模式下这个按钮就是主要操作，改名更直观
+        self.skip_button = QPushButton(
+            self.tr("practice.next_note" if not self.config.countdown_enabled else "practice.skip")
+        )
+        self.skip_button.clicked.connect(
+            self.advance_question if not self.config.countdown_enabled else self.skip_question
+        )
         self.stop_button = QPushButton(self.tr("practice.stop"))
         self.stop_button.clicked.connect(self.request_exit)
         for button in (self.pause_button, self.skip_button, self.stop_button):
@@ -127,10 +137,19 @@ class PracticePage(QWidget):
         layout.addWidget(self.meter)
 
         bottom = QHBoxLayout()
+        bottom.setSpacing(12)
         self.feedback = QLabel(self.tr("practice.waiting"))
         self.feedback.setObjectName("sectionTitle")
+        self.feedback.setWordWrap(True)
         bottom.addWidget(self.feedback, 1)
-        self.hint = QLabel(self.tr("practice.shortcuts"))
+        # 倒计时条：自绘控件，固定高度，不会与反馈文字挤在一起
+        self.countdown = CountdownBar()
+        bottom.addWidget(self.countdown)
+        self.hint = QLabel(
+            self.tr(
+                "practice.shortcuts" if self.config.countdown_enabled else "practice.shortcuts_manual"
+            )
+        )
         self.hint.setObjectName("faint")
         bottom.addWidget(self.hint)
         layout.addLayout(bottom)
@@ -252,6 +271,12 @@ class PracticePage(QWidget):
             return
         self._apply(self.session.skip())
 
+    def advance_question(self) -> None:
+        """手动推进到下一个音（手动超时模式的主要操作）。"""
+        if self.session.is_finished:
+            return
+        self._apply(self.session.advance())
+
     def request_exit(self) -> None:
         if not self.session.is_finished:
             self._apply(self.session.finish(reason="user"))
@@ -264,10 +289,42 @@ class PracticePage(QWidget):
 
         if self.audio is not None:
             for pitch in self.audio.poll():
+                self._last_event_t = pitch.t
+                self._last_event_wall = time.monotonic()
                 self._apply(self.session.feed(pitch))
 
         self._apply(self.session.tick())
         self._refresh_top()
+        self._refresh_countdown()
+
+    # ------------------------------------------------------------------ 倒计时
+    def _now_in_event_clock(self) -> float | None:
+        """把挂钟时间换算到 ``PitchEvent.t`` 的时间基上。"""
+        if self._last_event_t is None:
+            return None
+        return self._last_event_t + (time.monotonic() - self._last_event_wall)
+
+    def _refresh_countdown(self) -> None:
+        """更新倒计时条。
+
+        自动模式显示剩余秒数；手动推进模式不显示倒计时，改为提示按键，
+        因为此时程序不会自己换题。
+        """
+        if self.session.is_finished:
+            self.countdown.clear()
+            return
+        if not self.config.countdown_enabled:
+            self.countdown.show_manual(self.tr("practice.manual_hint"))
+            return
+
+        now = self._now_in_event_clock()
+        remaining = self.session.remaining_ms(now) if now is not None else None
+        if remaining is None:
+            # 还没收到音频（例如刚开始或设备异常）：显示满格，避免闪动
+            remaining = float(self.config.timeout_ms)
+        # 倒计时从宽容期结束后开始算，可能略大于超时秒数，作为总量取较大者
+        total = max(float(self.config.timeout_ms), remaining)
+        self.countdown.show_countdown(remaining, total)
 
     def _apply(self, events: list[SessionEvent]) -> None:
         for event in events:
@@ -280,7 +337,7 @@ class PracticePage(QWidget):
             elif event.kind == EVENT_TIMEOUT:
                 self._on_timeout()
             elif event.kind == EVENT_SKIPPED:
-                self._on_skipped()
+                self._on_skipped(event)
             elif event.kind == EVENT_FINISHED:
                 self._on_finished(event.summary)
         self._refresh_top()
@@ -357,9 +414,11 @@ class PracticePage(QWidget):
         self.feedback.setStyleSheet("color: #e8b339;")
         self.feedback.setText(self.tr("practice.timeout"))
 
-    def _on_skipped(self) -> None:
+    def _on_skipped(self, event: SessionEvent | None = None) -> None:
         self.feedback.setStyleSheet("color: #e8b339;")
-        self.feedback.setText(self.tr("practice.skipped"))
+        reason = event.reason if event is not None else ""
+        key = "practice.advanced" if reason == "manual" else "practice.skipped"
+        self.feedback.setText(self.tr(key))
 
     def _on_finished(self, summary: SessionSummary | None) -> None:
         self.stop_audio()
@@ -409,6 +468,9 @@ class PracticePage(QWidget):
             self.toggle_pause()
         elif key == Qt.Key.Key_S:
             self.skip_question()
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_N):
+            # 手动推进模式的主要操作；自动模式下等价于跳过
+            self.advance_question()
         elif key == Qt.Key.Key_Escape:
             self.request_exit()
         else:

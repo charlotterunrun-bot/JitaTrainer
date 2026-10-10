@@ -64,6 +64,15 @@ class JudgeConfig:
         return max(1, int(round(self.stable_ms / self.hop_ms)))
 
     @property
+    def timeout_enabled(self) -> bool:
+        """是否启用无声音超时。
+
+        ``timeout_ms <= 0`` 表示**不超时**：用于"手动推进"模式——
+        界面会提示用户按键进入下一题，程序不会自己换题。
+        """
+        return self.timeout_ms > 0
+
+    @property
     def effective_grace_ms(self) -> int:
         """按模式返回实际宽容期：严格模式与宽容模式都没有宽容期。"""
         if self.mode in (MODE_STRICT, MODE_LENIENT):
@@ -239,6 +248,9 @@ class PitchClassJudge:
         if outcome is not None:
             return outcome
 
+        if not self.config.timeout_enabled:
+            return None  # 手动推进模式：不自动换题，等界面按键
+
         deadline_base = max(self._grace_end, self._last_signal)
         if (event.t - deadline_base) * 1000.0 >= self.config.timeout_ms:
             self._decided = True
@@ -249,6 +261,21 @@ class PitchClassJudge:
                 feedback=True,
             )
         return None
+
+    # ------------------------------------------------------------------ 倒计时
+    @property
+    def deadline(self) -> float | None:
+        """超时时刻（与 ``PitchEvent.t`` 同一时间基）。未启用超时返回 None。"""
+        if not self.config.timeout_enabled:
+            return None
+        return max(self._grace_end, self._last_signal) + self.config.timeout_ms / 1000.0
+
+    def remaining_ms(self, now: float) -> float | None:
+        """距离超时还有多少毫秒（用于界面倒计时）。未启用超时返回 None。"""
+        deadline = self.deadline
+        if deadline is None:
+            return None
+        return max(0.0, (deadline - now) * 1000.0)
 
     @property
     def attempt_index(self) -> int:

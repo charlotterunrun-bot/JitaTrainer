@@ -41,7 +41,7 @@
   "practice.again": "再来一次",
   "practice.paused": "已暂停（麦克风已关闭）",
   "practice.skipped": "已跳过，计入薄弱项",
-  "practice.shortcuts": "空格 暂停　S 跳过　Esc 结束　F11 全屏",
+  "practice.shortcuts": "空格 暂停　S 跳过　回车 下一个　Esc 结束　F11 全屏",
   "practice.pause": "暂停",
   "practice.resume": "继续",
   "practice.skip": "跳过",
@@ -55,7 +55,7 @@
   "practice.waiting": "等待弹奏",
   "practice.correct": "正确！",
   "practice.wrong": "你弹的是 {played}，需要 {target}",
-  "practice.timeout": "超时，本题记为不会",
+  "practice.timeout": "超时处理",
   "practice.source.review": "复习",
   "practice.source.weak": "强化",
   "practice.source.requeue": "回炉",
@@ -159,5 +159,12 @@
   "instrument.measure": "测量我的吉他",
   "instrument.measure_help": "用一段录音生成属于你这把琴的配置档案：\n\n1. 用录音软件依次拨响 6→5→4→3→2→1 弦（每根弦 2~3 次）；\n2. 把文件放到程序目录，然后运行：\n\n   python tools\\measure_guitar.py 你的录音.m4a --name \"我的吉他\"\n\n3. 生成的文件在 data\\instruments\\ 下；\n4. 回到这里用「选择配置档案…」加载它。\n\n测量会告诉你每根弦的音分偏差、电平是否均衡、以及该用哪种检测策略。\n程序目录：{path}",
   "instrument.line": "乐器档案",
-  "practice.env_warning": "连续多次检测到无法解释的音高——请检查麦克风摆位与增益，或确认是否弹了别的乐器"
+  "practice.env_warning": "连续多次检测到无法解释的音高——请检查麦克风摆位与增益，或确认是否弹了别的乐器",
+  "practice.timeout.auto": "自动换下一个音（显示倒计时）",
+  "practice.timeout.manual": "人工推进（不自动换题）",
+  "practice.timeout_seconds": "超时秒数",
+  "practice.next_note": "下一个音",
+  "practice.manual_hint": "按 回车 或 S 进入下一个音",
+  "practice.advanced": "已进入下一个音（计入薄弱项）",
+  "practice.shortcuts_manual": "空格 暂停　回车/S 下一个音　Esc 结束　F11 全屏"
 }

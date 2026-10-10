@@ -28,6 +28,11 @@ MODE_COUNT = "count"
 MODE_FREE = "free"
 MODE_IDS = (MODE_DURATION, MODE_COUNT, MODE_FREE)
 
+#: 超时处理方式
+TIMEOUT_AUTO = "auto"  # 到时间自动换下一个音（界面显示倒计时）
+TIMEOUT_MANUAL = "manual"  # 不自动换题，由用户按键推进（界面不显示倒计时）
+TIMEOUT_MODES = (TIMEOUT_AUTO, TIMEOUT_MANUAL)
+
 DURATION_PRESETS = (5, 10, 15, 30, 45)
 COUNT_PRESETS = (10, 20, 30, 50, 100)
 DEFAULT_DURATION_MINUTES = 15
@@ -64,6 +69,11 @@ class SessionConfig:
     include_accidentals: bool = False
     scoring_enabled: bool = True
     show_note_name: bool = False
+    #: 超时处理：auto = 到时间自动换下一个音（显示倒计时）；
+    #: manual = 不自动换题，由用户按键推进。
+    timeout_mode: str = TIMEOUT_AUTO
+    #: 无声音超时秒数（仅 auto 模式生效）
+    timeout_seconds: float = 8.0
 
     def validate(self) -> None:
         if self.mode not in MODE_IDS:
@@ -72,6 +82,21 @@ class SessionConfig:
             raise ValueError("固定时长模式的时长必须为正")
         if self.mode == MODE_COUNT and self.target_count <= 0:
             raise ValueError("固定数量模式的题量必须为正")
+        if self.timeout_mode not in TIMEOUT_MODES:
+            raise ValueError(f"未知超时处理方式：{self.timeout_mode}")
+        if self.timeout_mode == TIMEOUT_AUTO and self.timeout_seconds <= 0:
+            raise ValueError("自动超时的秒数必须为正")
+
+    @property
+    def timeout_ms(self) -> int:
+        """传给判定器的超时毫秒数；手动推进时为 0（表示不超时）。"""
+        if self.timeout_mode == TIMEOUT_MANUAL:
+            return 0
+        return int(self.timeout_seconds * 1000)
+
+    @property
+    def countdown_enabled(self) -> bool:
+        return self.timeout_mode == TIMEOUT_AUTO
 
     @property
     def target_seconds(self) -> float:
@@ -161,6 +186,8 @@ class SessionEvent:
     question: Question | None = None
     outcome: JudgeOutcome | None = None
     summary: SessionSummary | None = None
+    #: 补充说明。目前用于区分跳过原因：``timeout`` / ``manual`` / ``user``
+    reason: str = ""
 
 
 class PracticeSession:
@@ -302,6 +329,17 @@ class PracticeSession:
 
     def skip(self) -> list[SessionEvent]:
         """跳过本题：记为"不会"，计入薄弱项（需求 FR-560）。"""
+        return self._leave_question(reason="user", event_kind=EVENT_SKIPPED)
+
+    def advance(self) -> list[SessionEvent]:
+        """手动推进到下一个音（手动超时模式）。
+
+        语义与跳过一致（记"不会"、计入薄弱项并排进回炉），
+        区别只在事件里带 ``reason="manual"``，界面据此显示不同提示。
+        """
+        return self._leave_question(reason="manual", event_kind=EVENT_SKIPPED)
+
+    def _leave_question(self, *, reason: str, event_kind: str) -> list[SessionEvent]:
         if self._question is None or self.is_finished:
             return []
         self.stats.asked += 1
@@ -310,9 +348,20 @@ class PracticeSession:
         self.stats.wrong_by_item[self._question.item_key] += 1
         self._ignore_pc = None
         self._record_schedule(correct=False, skipped=True)
-        events = [SessionEvent(kind=EVENT_SKIPPED, question=self._question)]
+        events = [
+            SessionEvent(kind=event_kind, question=self._question, reason=reason)
+        ]
         events.extend(self._maybe_finish_or_next())
         return self._emit(events)
+
+    def remaining_ms(self, now: float) -> float | None:
+        """当前题距离自动换题还有多少毫秒；手动模式或已结束时返回 None。
+
+        界面用它显示倒计时。
+        """
+        if self._judge is None or self.is_finished:
+            return None
+        return self._judge.remaining_ms(now)
 
     def tick(self) -> list[SessionEvent]:
         """按时间推进（固定时长模式到点结束）。由 UI 定时器调用。"""
@@ -359,6 +408,8 @@ class PracticeSession:
 
         if self._judge is None:
             config = self.judge_factory(self._question)
+            # 超时策略来自会话配置：手动推进时传 0 = 不超时，程序不会自己换题
+            config = replace(config, timeout_ms=self.config.timeout_ms)
             if self._ignore_pc is not None:
                 config = replace(config, ignore_pitch_class=self._ignore_pc)
             self._judge = PitchClassJudge(config, started_at=pitch.t)
@@ -452,7 +503,11 @@ class PracticeSession:
         self.stats.wrong_by_item[self._question.item_key] += 1
         self._ignore_pc = None
         self._record_schedule(correct=False, timed_out=True)
-        events = [SessionEvent(kind=EVENT_TIMEOUT, question=self._question, outcome=outcome)]
+        events = [
+            SessionEvent(
+                kind=EVENT_TIMEOUT, question=self._question, outcome=outcome, reason="timeout"
+            )
+        ]
         events.extend(self._maybe_finish_or_next())
         return events
 

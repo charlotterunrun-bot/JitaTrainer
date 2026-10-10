@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -24,6 +25,8 @@ from ..practice.session import (
     MODE_COUNT,
     MODE_DURATION,
     MODE_FREE,
+    TIMEOUT_AUTO,
+    TIMEOUT_MANUAL,
     SessionConfig,
     SessionSummary,
 )
@@ -70,6 +73,22 @@ class SessionSetupDialog(QDialog):
         self.note_hint_check.setChecked(base.show_note_name)
         form.addRow("", self.note_hint_check)
 
+        # 超时处理：自动换题（显示倒计时）或人工推进
+        self.timeout_combo = QComboBox()
+        self.timeout_combo.addItem(tr("practice.timeout.auto"), TIMEOUT_AUTO)
+        self.timeout_combo.addItem(tr("practice.timeout.manual"), TIMEOUT_MANUAL)
+        timeout_index = self.timeout_combo.findData(base.timeout_mode)
+        self.timeout_combo.setCurrentIndex(max(0, timeout_index))
+        self.timeout_combo.currentIndexChanged.connect(self._on_timeout_changed)
+        form.addRow(tr("practice.timeout"), self.timeout_combo)
+
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(2, 60)
+        self.timeout_spin.setSuffix(" " + tr("settings.seconds"))
+        self.timeout_spin.setValue(max(2, int(round(base.timeout_seconds))))
+        form.addRow(tr("practice.timeout_seconds"), self.timeout_spin)
+        self._on_timeout_changed()
+
         self.scoring_check = QCheckBox(tr("settings.scoring"))
         self.scoring_check.setChecked(base.scoring_enabled)
         form.addRow("", self.scoring_check)
@@ -114,6 +133,11 @@ class SessionSetupDialog(QDialog):
     def _on_mode_changed(self) -> None:
         self._fill_targets(self._base)
 
+    def _on_timeout_changed(self) -> None:
+        """只有自动模式需要设置超时秒数。"""
+        auto = self.timeout_combo.currentData() == TIMEOUT_AUTO
+        self.timeout_spin.setEnabled(auto)
+
     # ------------------------------------------------------------------ 结果
     def config(self) -> SessionConfig:
         mode = self.mode_combo.currentData()
@@ -127,6 +151,8 @@ class SessionSetupDialog(QDialog):
             include_accidentals=self.accidental_check.isChecked(),
             scoring_enabled=self.scoring_check.isChecked(),
             show_note_name=self.note_hint_check.isChecked(),
+            timeout_mode=self.timeout_combo.currentData(),
+            timeout_seconds=float(self.timeout_spin.value()),
         )
 
 

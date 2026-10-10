@@ -18,6 +18,7 @@ from jitatrainer.practice.pitch_find.module import (
     make_context,
 )
 from jitatrainer.practice.session import (
+    TIMEOUT_MANUAL,
     EVENT_CORRECT,
     EVENT_FINISHED,
     EVENT_QUESTION,
@@ -284,7 +285,10 @@ class TestSessionBasic:
         assert session.stats.wrong_attempts == 1
 
     def test_timeout_marks_unknown_and_advances(self) -> None:
-        session = make_session(SessionConfig(mode=MODE_COUNT, target_count=3))
+        # 超时秒数现在由会话配置决定（用户策略），不再取模块的 judge 配置
+        session = make_session(
+            SessionConfig(mode=MODE_COUNT, target_count=3, timeout_seconds=5.0)
+        )
         session.start()
         events = []
         for pitch in silence_events(count=600, step=0.01):
@@ -292,8 +296,53 @@ class TestSessionBasic:
             if events:
                 break
         assert events and events[0].kind == EVENT_TIMEOUT
+        assert events[0].reason == "timeout"
         assert events[-1].kind == EVENT_QUESTION
         assert session.stats.timeouts == 1
+
+    def test_manual_mode_never_times_out(self) -> None:
+        """手动推进模式：再久也不会自动换题。"""
+        session = make_session(
+            SessionConfig(mode=MODE_COUNT, target_count=3, timeout_mode=TIMEOUT_MANUAL)
+        )
+        session.start()
+        for pitch in silence_events(count=3000, step=0.01):  # 等效 30 秒静音
+            assert session.feed(pitch) == []
+        assert session.stats.timeouts == 0
+        assert session.stats.asked == 0
+        assert session.current_question is not None
+
+    def test_manual_advance_records_as_weak(self) -> None:
+        session = make_session(
+            SessionConfig(mode=MODE_COUNT, target_count=3, timeout_mode=TIMEOUT_MANUAL)
+        )
+        session.start()
+        events = session.advance()
+        assert events[0].kind == EVENT_SKIPPED
+        assert events[0].reason == "manual"
+        assert events[-1].kind == EVENT_QUESTION
+        assert session.stats.skipped == 1
+        assert session.stats.wrong_by_item
+
+    def test_remaining_ms_tracks_timeout(self) -> None:
+        session = make_session(
+            SessionConfig(mode=MODE_COUNT, target_count=3, timeout_seconds=5.0)
+        )
+        session.start()
+        first = next(iter(silence_events(count=1)))
+        session.feed(first)
+        remaining = session.remaining_ms(first.t)
+        assert remaining is not None
+        assert 0 < remaining <= 6000
+
+    def test_remaining_ms_is_none_in_manual_mode(self) -> None:
+        session = make_session(
+            SessionConfig(mode=MODE_COUNT, target_count=3, timeout_mode=TIMEOUT_MANUAL)
+        )
+        session.start()
+        first = next(iter(silence_events(count=1)))
+        session.feed(first)
+        assert session.remaining_ms(first.t) is None
 
     def test_skip_advances_and_records_weak_item(self) -> None:
         session = make_session(SessionConfig(mode=MODE_COUNT, target_count=3))

@@ -14,6 +14,7 @@ from ..data.db import Database, utc_now_iso
 from ..data.settings import Settings
 from ..i18n import LANGUAGE_LABELS, Translator
 from ..practice.session import (
+    TIMEOUT_AUTO,
     DEFAULT_COUNT,
     DEFAULT_DURATION_MINUTES,
     MODE_COUNT,
@@ -377,6 +378,10 @@ class MainWindow(QMainWindow):
             include_accidentals=self.settings.get_bool("include_accidentals", False),
             scoring_enabled=self.settings.get_bool("scoring_enabled", True),
             show_note_name=self.settings.get_bool("show_note_name", False),
+            timeout_mode=self.settings.get("timeout_mode", TIMEOUT_AUTO),
+            timeout_seconds=self.settings.get_float(
+                "timeout_seconds", self.settings.get_int("timeout_ms", 8000) / 1000.0
+            ),
         )
 
     def save_session_config(self, config: SessionConfig) -> None:
@@ -389,6 +394,8 @@ class MainWindow(QMainWindow):
                 "include_accidentals": config.include_accidentals,
                 "scoring_enabled": config.scoring_enabled,
                 "show_note_name": config.show_note_name,
+                "timeout_mode": config.timeout_mode,
+                "timeout_seconds": config.timeout_seconds,
             }
         )
 

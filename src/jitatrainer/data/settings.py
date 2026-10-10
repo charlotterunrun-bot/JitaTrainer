@@ -61,6 +61,8 @@ DEFAULTS: dict[str, str] = {
     "session_mode": "count",
     "session_minutes": "15",
     "session_count": "30",
+    "timeout_mode": "auto",
+    "timeout_seconds": "8.0",
 }
 
 _TRUE = {"1", "true", "yes", "on", "是"}

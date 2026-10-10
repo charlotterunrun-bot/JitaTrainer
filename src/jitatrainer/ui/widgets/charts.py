@@ -30,7 +30,12 @@ class _ChartBase(QWidget):
         self.update()
 
     def _plot_rect(self) -> QRectF:
-        rect = QRectF(self.rect()).adjusted(48, 30, -14, -26)
+        """绘图区。
+
+        上边距留 40px：标题占 y 4~24，最上面的 Y 轴刻度占 (top-9)~(top+9)。
+        原来上边距只有 30，两者会在 y 21~24 处叠一小条（渲染成图片能看到）。
+        """
+        rect = QRectF(self.rect()).adjusted(48, 40, -14, -26)
         return rect
 
     def _draw_title(self, painter: QPainter) -> None:

@@ -171,7 +171,10 @@ class StatsPage(QWidget):
                 ),
             ),
         ]
-        for column, (caption, value, delta) in enumerate(kpis):
+        # 3 列 × 2 行放置。原来一行塞 6 个，长标题（"题量对比（本段 vs 上段）"）
+        # 在 1000px 左右的窗口下会被挤到一起，看起来就是"文字重叠"。
+        for index, (caption, value, delta) in enumerate(kpis):
+            row, column = divmod(index, 3)
             box = QVBoxLayout()
             caption_label = QLabel(caption)
             caption_label.setObjectName("faint")
@@ -185,7 +188,9 @@ class StatsPage(QWidget):
                     f"font-size: 13px; color: {'#3ecf8e' if delta.startswith('+') else '#e05c5c'};"
                 )
                 box.addWidget(delta_label)
-            self.kpi_grid.addLayout(box, 0, column)
+            self.kpi_grid.addLayout(box, row, column)
+        # 两行之间留间距，避免上下行的说明文字贴在一起
+        self.kpi_grid.setVerticalSpacing(10)
 
     @staticmethod
     def _delta_text(delta: float, *, suffix: str = "") -> str:

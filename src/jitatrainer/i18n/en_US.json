@@ -41,7 +41,7 @@
   "practice.again": "Again",
   "practice.paused": "Paused (microphone off)",
   "practice.skipped": "Skipped — counted as weak",
-  "practice.shortcuts": "Space pause　S skip　Esc end　F11 fullscreen",
+  "practice.shortcuts": "Space pause  S skip  Enter next  Esc end  F11 fullscreen",
   "practice.pause": "Pause",
   "practice.resume": "Resume",
   "practice.skip": "Skip",
@@ -55,7 +55,7 @@
   "practice.waiting": "Waiting for your note",
   "practice.correct": "Correct!",
   "practice.wrong": "You played {played}, need {target}",
-  "practice.timeout": "Timed out — marked as unknown",
+  "practice.timeout": "Timing",
   "practice.source.review": "Review",
   "practice.source.weak": "Weak",
   "practice.source.requeue": "Requeue",
@@ -159,5 +159,12 @@
   "instrument.measure": "Measure my guitar",
   "instrument.measure_help": "Generate a profile for your own guitar from a recording:\n\n1. Record yourself plucking strings 6-5-4-3-2-1 (2-3 times each);\n2. Put the file next to the program and run:\n\n   python tools\\measure_guitar.py your-recording.m4a --name \"My guitar\"\n\n3. The profile lands in data\\instruments\\;\n4. Load it here with \"Choose profile...\".\n\nThe measurement reports each string's cents offset, level balance and which detection strategy to use.\nProgram folder: {path}",
   "instrument.line": "Instrument",
-  "practice.env_warning": "Several pitches in a row could not be explained - check microphone placement and gain, or make sure no other instrument is sounding"
+  "practice.env_warning": "Several pitches in a row could not be explained - check microphone placement and gain, or make sure no other instrument is sounding",
+  "practice.timeout.auto": "Auto-advance (show countdown)",
+  "practice.timeout.manual": "Manual advance (no auto-advance)",
+  "practice.timeout_seconds": "Timeout",
+  "practice.next_note": "Next note",
+  "practice.manual_hint": "Press Enter or S for the next note",
+  "practice.advanced": "Moved to the next note (counted as weak)",
+  "practice.shortcuts_manual": "Space pause  Enter/S next note  Esc end  F11 fullscreen"
 }
