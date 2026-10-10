@@ -4,8 +4,12 @@
 
 **English**: JitaTrainer is a Windows desktop ear-and-fretboard trainer for guitar. It shows a note in guitar TAB, listens through your microphone, judges whether the note you played is correct, then moves on — while scheduling reviews of your weak notes with a spaced-repetition model.
 
-**当前状态**：M0 技术方案已评审通过；**M1 地基实现完成**，自动化验证通过（144 项测试 + 打包产物自检）；
-M1 的实机验收待更换麦克风后进行。**恢复工作前请先读** [交接说明](docs/开发记录/交接说明-2026-10-07-M1暂停.md)。
+**当前状态**：M0~M8 全部实现完成并推送（**437 项测试**通过、打包产物自检全绿、
+性能与内存稳定性已验证）。用户已换上正常麦克风并实测：本次录音六根弦全部识别正确，
+音准偏差收敛到 −16~+1 音分。**里程碑标签待用户实机验收后打**。
+上手请看 **[软件使用说明（图文版）](docs/软件使用说明.md)**。
+
+![首页](docs/images/01-首页.png)
 
 ---
 
@@ -57,9 +61,11 @@ M1 的实机验收待更换麦克风后进行。**恢复工作前请先读** [�
 
 ## 文档
 
+- **软件使用说明（图文版）**：[docs/软件使用说明.md](docs/软件使用说明.md) — 推荐先读这个
+- 用户手册（条目式）：[docs/用户手册.md](docs/用户手册.md) — 参数含义、快捷键、故障排查
 - 需求文档（PRD）：[docs/需求文档.md](docs/需求文档.md) — v1.1，已审核通过
 - 技术方案：M0 技术方案 → [docs/技术方案.md](docs/技术方案.md)
-- **交接说明**：[docs/开发记录/交接说明-2026-10-07-M1暂停.md](docs/开发记录/交接说明-2026-10-07-M1暂停.md) — 恢复工作前必读
+- **交接说明**：[docs/开发记录/交接说明-2026-10-07-M1暂停.md](docs/开发记录/交接说明-2026-10-07-M1暂停.md)
 - 对话记录归档：[docs/对话记录/](docs/对话记录/) — 人机问答与决策溯源（脱敏）
 - 开发记录：[docs/开发记录/](docs/开发记录/) — 每个里程碑的过程档案
 

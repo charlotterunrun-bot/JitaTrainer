@@ -31,6 +31,10 @@ class HomePage(QWidget):
         self.settings = settings
         self.tr = tr
         self.profile_name = profile_name
+        #: 当前学习者账号。必须真的存下来：_learning_status 依赖它，
+        #: 而它原先并不存在 —— 结果是每次刷新都抛 AttributeError、被 except 吞掉，
+        #: 首页的「复习计划」与「难度建议」一直是"—"，功能等于没生效还看不出来。
+        self.profile_id = settings.profile_id
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -109,7 +113,7 @@ class HomePage(QWidget):
         layout.addWidget(self.advice_label)
         layout.addStretch(1)
 
-        self.hint = QLabel("M3 进行中：记忆曲线调度已接入，统计报告将在 M4 实现。")
+        self.hint = QLabel(self.tr("home.hint"))
         self.hint.setObjectName("faint")
         layout.addWidget(self.hint)
 
@@ -194,16 +198,22 @@ class HomePage(QWidget):
 
     def _learning_status(self) -> tuple[str, str]:
         """到期复习数量与难度进阶建议（M3）。"""
+        import logging
+
         from ...core.theory.levels import next_level
         from ...data.repository import PracticeStatsRepository
 
         level_id = self.settings.get("level_id", "L1")
         try:
-            repository = PracticeStatsRepository(self.settings.db, self.profile_id or 1)
+            # 用设置里的账号 id，而不是自己的属性：切换账号后设置访问器是权威来源
+            profile_id = self.settings.profile_id or self.profile_id or 1
+            repository = PracticeStatsRepository(self.settings.db, profile_id)
             conn = self.settings.conn
             due = repository.due_count(conn, level_id)
             advice = repository.should_advance_level(conn, level_id)
         except Exception:  # noqa: BLE001 - 统计失败不影响首页
+            # 记日志而不是静默吞掉：正是"静默 + 属性不存在"让这个功能悄悄失效了很久
+            logging.getLogger(__name__).exception("首页统计刷新失败")
             return "—", ""
 
         due_text = self.tr("home.due_today", count=due) if due else self.tr("home.no_due")

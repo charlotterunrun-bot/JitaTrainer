@@ -222,6 +222,66 @@ class TestLearningIntegration:
         conn.close()
 
 
+class TestHomePageLearningStatus:
+    """回归：首页的「复习计划」与「难度建议」曾经永远是"—"。
+
+    原因是 HomePage 根本没有 profile_id 属性，_learning_status 抛 AttributeError，
+    又被 `except Exception: return "—", ""` 静静吞掉 —— 功能等于没生效还看不出来。
+    这类"静默失败"必须用断言钉住。
+    """
+
+    def _home(self, tmp_path, tr, app, *, with_due: bool):  # noqa: ARG002
+        from datetime import datetime, timedelta, timezone
+
+        from jitatrainer.core.theory.notes import NOTE_NAMES
+        from jitatrainer.ui.pages.home import HomePage
+
+        db = Database(tmp_path / "home.db")
+        db.initialize()
+        conn = db.connect()
+        profile_id = db.list_profiles(conn)[0]["id"]
+        if with_due:
+            now = datetime.now(timezone.utc)
+            for pc in (4, 9):
+                conn.execute(
+                    "INSERT INTO items (profile_id, module_id, item_key, pitch_class, level_id, "
+                    "interval_index, due_at, seen_count) "
+                    "VALUES (?, 'pitch_find', ?, ?, 'L1', 1, ?, 3)",
+                    (profile_id, f"note={NOTE_NAMES[pc]}|level=L1", pc,
+                     (now - timedelta(hours=1)).isoformat()),
+                )
+            conn.commit()
+        page = HomePage(Settings(db, conn, profile_id), tr, "测试档案")
+        page.refresh()
+        return page, conn
+
+    def _values(self, page) -> str:  # noqa: ANN001
+        return " ".join(
+            page.info_grid.itemAt(i).widget().text()
+            for i in range(page.info_grid.count())
+            if page.info_grid.itemAt(i).widget() is not None
+        )
+
+    def test_shows_due_count_instead_of_placeholder(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._home(tmp_path, tr, app, with_due=True)
+        values = self._values(page)
+        assert "2" in values, f"应显示到期复习数量：{values}"
+        assert "—" not in values, f"不该落到异常分支的占位符：{values}"
+        conn.close()
+
+    def test_no_due_shows_clear_message(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._home(tmp_path, tr, app, with_due=False)
+        values = self._values(page)
+        assert "无待复习" in values, f"应说明今天没有待复习项：{values}"
+        conn.close()
+
+    def test_profile_id_attribute_exists(self, tmp_path, tr, app) -> None:  # noqa: ARG002
+        page, conn = self._home(tmp_path, tr, app, with_due=False)
+        assert page.profile_id is not None
+        assert page.profile_id == page.settings.profile_id
+        conn.close()
+
+
 class TestStatsPage:
     """M4 统计页：渲染与数据绑定（图表是自绘控件，必须真的画一遍）。"""
 
