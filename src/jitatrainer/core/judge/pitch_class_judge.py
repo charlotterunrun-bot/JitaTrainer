@@ -130,6 +130,8 @@ class PitchClassJudge:
         self._ignored_pc = config.ignore_pitch_class
         #: 连续静音帧计数：静音足够久说明上一个音已经衰减完，可以解除忽略
         self._silent_frames = 0
+        #: 宽容期是否已经结束（结束时清一次窗口，避免试音被当成答案）
+        self._grace_done = config.effective_grace_ms <= 0
 
     # ------------------------------------------------------------------ 内部
     def _to_reading(self, event: PitchEvent) -> _Reading:
@@ -140,7 +142,7 @@ class PitchClassJudge:
             return _Reading(None, None, None)
         return _Reading(pc, nearest_cents_offset(event.hz, pc), event.hz)
 
-    def _decide(self, now: float) -> JudgeOutcome | None:
+    def _decide(self, now: float, *, correct_only: bool = False) -> JudgeOutcome | None:
         window = list(self._window)
         if len(window) < self.config.needed_frames:
             return None
@@ -183,6 +185,11 @@ class PitchClassJudge:
                 feedback=True,
             )
 
+        if correct_only:
+            # 宽容期内只允许"判对"：判错要走正常流程（含清窗、重新武装），
+            # 但宽容期的本意就是不让试音被判错，所以这里什么都不做。
+            return None
+
         # 判错：清空窗口并等待用户重新拨弦（需求 FR-537：停留直到弹对）。
         # 必须要求"新起音"，否则同一根还在响的弦会被反复判错。
         self._window.clear()
@@ -214,9 +221,6 @@ class PitchClassJudge:
             self._ignored_pc = None
             self._silent_frames = 0
 
-        if event.t < self._grace_end:
-            return None  # 宽容期：只观察，不判定
-
         reading = self._to_reading(event)
 
         # 静音足够久 → 上一个音已经衰减，解除忽略（同一音名连续出题时的保障）
@@ -240,13 +244,25 @@ class PitchClassJudge:
             else:
                 return None
 
+        # 宽容期：本意是"试音不判错"。但**弹对了必须立刻算对**——
+        # 宽容期不是为了压住正确答案。空弦（不用按品）尤其明显：
+        # 用户看到题立刻拨响，旧逻辑会把这一下静默忽略 2 秒，感觉就是"捕捉不敏感"。
+        # 判错仍然留到宽容期之后，保证试音不会被记错。
+        in_grace = event.t < self._grace_end
+        if not in_grace and not self._grace_done:
+            # 宽容期刚结束：丢掉期内累积的读数，避免试音被当成答案判错
+            self._grace_done = True
+            self._window.clear()
+
         self._window.append(reading)
         if reading.pc is not None:
             self._last_signal = event.t
 
-        outcome = self._decide(event.t)
+        outcome = self._decide(event.t, correct_only=in_grace)
         if outcome is not None:
             return outcome
+        if in_grace:
+            return None
 
         if not self.config.timeout_enabled:
             return None  # 手动推进模式：不自动换题，等界面按键
@@ -276,6 +292,25 @@ class PitchClassJudge:
         if deadline is None:
             return None
         return max(0.0, (deadline - now) * 1000.0)
+
+    @property
+    def grace_end(self) -> float:
+        """宽容期结束时刻（与 ``PitchEvent.t`` 同一时间基）。"""
+        return self._grace_end
+
+    def in_grace(self, now: float) -> bool:
+        """当前是否还在宽容期。
+
+        界面据此提示"试音中、不计入判定"——否则用户拨了却没有任何反应，
+        会以为程序没听到（实测反馈："空弹捕捉不敏感"）。
+        """
+        return not self._grace_done and now < self._grace_end
+
+    def grace_remaining_ms(self, now: float) -> float | None:
+        """宽容期还剩多少毫秒；不在宽容期返回 None。"""
+        if not self.in_grace(now):
+            return None
+        return max(0.0, (self._grace_end - now) * 1000.0)
 
     @property
     def attempt_index(self) -> int:

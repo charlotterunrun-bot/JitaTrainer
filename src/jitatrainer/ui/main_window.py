@@ -395,6 +395,9 @@ class MainWindow(QMainWindow):
             timeout_seconds=self.settings.get_float(
                 "timeout_seconds", self.settings.get_int("timeout_ms", 8000) / 1000.0
             ),
+            grace_seconds=self.settings.get_float(
+                "grace_seconds", self.settings.get_int("grace_ms", 2000) / 1000.0
+            ),
         )
 
     def save_session_config(self, config: SessionConfig) -> None:
@@ -409,6 +412,7 @@ class MainWindow(QMainWindow):
                 "show_note_name": config.show_note_name,
                 "timeout_mode": config.timeout_mode,
                 "timeout_seconds": config.timeout_seconds,
+                "grace_seconds": config.grace_seconds,
             }
         )
 

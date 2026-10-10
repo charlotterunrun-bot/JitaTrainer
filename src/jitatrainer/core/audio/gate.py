@@ -91,37 +91,69 @@ class NoiseFloorMeter:
 class OnsetDetector:
     """拨弦起音检测。
 
-    判据：当前帧电平比最近 ``history`` 帧的**最大值**高出 ``rise_db`` 以上。
+    两条判据满足其一即算起音：
 
-    用最大值而不是均值作基线，是为了不被"缓升"骗到：如果音量在几帧内
-    慢慢爬升（例如远处的环境声渐强），相对最近最大值的增幅很小，不会误判为
-    拨弦；而真正的拨弦是相对前几帧的突然跳变。
+    1. **突跳**：当前帧电平比最近 ``history`` 帧的**最大值**高出 ``rise_db`` 以上。
+       用最大值而不是均值作基线，是为了不被"缓升"骗到：如果音量在几帧内慢慢爬升
+       （例如远处的环境声渐强），相对最近最大值的增幅很小，不会误判为拨弦。
+    2. **从近期谷底回升**：当前帧比最近 ``floor_history`` 帧的**最小值**高出
+       ``floor_rise_db`` 以上。
 
-    起音时刻用于标定"用户开始弹奏"，是宽容期结束后判定窗口的起点参考。
+    为什么需要第 2 条（实测反馈："6 弦、1 弦空弹捕捉不敏感"）
+    ------------------------------------------------------
+
+    只靠第 1 条时，**琴弦还在余振中重新拨响会被漏检**：此时最近几帧的电平本来就
+    不低，重拨带来的增幅常常不到 8 dB。而用户弹空弦（不用按品）时往往连续快速拨弦，
+    正是这种情况 —— 起音漏检 → 判定器一直处于"未武装"状态 → 用户怎么弹都没反应。
+
+    衰减中的琴弦在最近若干帧里是**单调下降**的，因此"最近 150ms 的最小值"
+    就是最新的一帧；重拨会让电平明显回升，从而被第 2 条判据抓住。
+    稳定音上最小值≈最大值，不会误触发；缓慢的环境噪声抬升也达不到阈值。
     """
 
     rise_db: float = 8.0
     history: int = 3
+    #: 用来取"近期谷底"的帧数（默认 15 帧 ≈ 150ms @ 10ms 帧移）
+    floor_history: int = 15
+    #: 相对近期谷底的回升阈值
+    floor_rise_db: float = 6.0
+    #: 谷底判据要求的"相对上一帧的即时抬升"，用来排除衰减过程中的延迟误报
+    floor_step_db: float = 3.0
     _recent: list[float] = field(default_factory=list)
+    _floor: list[float] = field(default_factory=list)
 
     def update(self, level_db: float) -> bool:
         """送入一帧电平，返回是否为起音。"""
+        previous = self._floor[-1] if self._floor else None
         is_onset = False
         if len(self._recent) >= self.history:
             baseline = max(self._recent)
             if level_db - baseline >= self.rise_db:
                 is_onset = True
+        if (
+            not is_onset
+            and len(self._floor) >= self.floor_history
+            and previous is not None
+            and level_db - previous >= self.floor_step_db  # 必须是在"往上走"
+            and level_db - min(self._floor) >= self.floor_rise_db
+        ):
+            is_onset = True
 
         if is_onset:
             # 触发后重建基线，避免持续音被反复判为起音
             self._recent.clear()
+            self._floor.clear()
         self._recent.append(level_db)
         if len(self._recent) > self.history:
             self._recent.pop(0)
+        self._floor.append(level_db)
+        if len(self._floor) > self.floor_history:
+            self._floor.pop(0)
         return is_onset
 
     def reset(self) -> None:
         self._recent.clear()
+        self._floor.clear()
 
 
 @dataclass(frozen=True, slots=True)

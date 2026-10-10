@@ -179,5 +179,8 @@
   "measure.done": "测量完成：{count} 根弦有数据",
   "measure.no_sound": "未测到声音",
   "measure.no_problem": "✅ 没有发现问题",
-  "measure.notes": "由界面内的测量向导生成。偏差仅作提示，目标音高仍取配置档案设定的调弦。"
+  "measure.notes": "由界面内的测量向导生成。偏差仅作提示，目标音高仍取配置档案设定的调弦。",
+  "practice.grace": "宽容期（试音不判错）",
+  "practice.grace_hint": "出题后这段时间内，弹错不会被判错（用于找位置试音）；但**弹对了会立即算对**，所以看到题就能直接弹。设为 0 表示立即判定。",
+  "practice.in_grace": "试音中"
 }

@@ -183,6 +183,49 @@ class TestAudioSession:
         session.capture.stop()
 
 
+class TestOnsetOnRingingString:
+    """回归：琴弦余振中重新拨响时的起音检测（用户反馈"空弦捕捉不敏感"）。
+
+    原判据只看"相对最近 3 帧最大值的突跳"。琴弦还在响时最近几帧电平本来就不低，
+    重拨带来的增幅常常不到阈值 → 起音漏检 → 判定器一直未武装 → 用户怎么弹都没反应。
+    用户弹空弦（不用按品）时经常连续快速拨弦，正是这种情况。
+    """
+
+    def test_detects_first_pluck_from_silence(self) -> None:
+        detector = OnsetDetector()
+        pattern = [-70.0, -70.0, -70.0, -70.0, -20.0, -22.0]
+        onsets = [i for i, level in enumerate(pattern) if detector.update(level)]
+        assert 4 in onsets, "从静音拨响必须检出起音"
+
+    def test_detects_repluck_while_string_still_ringing(self) -> None:
+        detector = OnsetDetector()
+        decay = [-70, -70, -20, -22, -25, -28, -30, -32, -34, -36, -38, -40,
+                 -41, -42, -43, -44, -45, -44, -43]
+        list(level for level in decay if detector.update(level))
+        assert detector.update(-25.0) is True, "余振中重拨必须检出起音"
+
+    def test_no_false_onset_during_pure_decay(self) -> None:
+        """单纯衰减不得误报起音（这会反复重新武装判定器）。"""
+        detector = OnsetDetector()
+        for level in (-70.0, -70.0, -20.0):
+            detector.update(level)
+        onsets = [i for i in range(20) if detector.update(-22.0 - i * 1.5)]
+        assert onsets == [], f"衰减过程中误报起音：{onsets}"
+
+    def test_no_false_onset_on_steady_note(self) -> None:
+        detector = OnsetDetector()
+        for _ in range(5):
+            detector.update(-25.0)
+        assert [i for i in range(30) if detector.update(-25.0 + (i % 3) * 0.5)] == []
+
+    def test_onset_clears_after_trigger(self) -> None:
+        detector = OnsetDetector()
+        for _ in range(5):
+            detector.update(-70.0)
+        assert detector.update(-20.0) is True
+        assert [i for i in range(10) if detector.update(-20.0)] == []
+
+
 class TestAudioThreadLifecycle:
     """回归：真实麦克风路径曾经完全起不来。
 

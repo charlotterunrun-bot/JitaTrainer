@@ -75,6 +75,59 @@ class TestGracePeriod:
         outcomes = feed_all(judge, [ev(t / 100, hz=A2) for t in range(1, 30)])
         assert outcomes and outcomes[0].result == RESULT_WRONG
 
+    # ---- 宽容期语义修订：弹对必须立刻算对（用户反馈"空弦捕捉不敏感"）----
+    def test_correct_note_inside_grace_is_accepted_immediately(self) -> None:
+        """空弦不用按品，用户看到题立刻拨响——不能被宽容期静默压住 2 秒。"""
+        cfg = JudgeConfig(
+            target_pc=4, stable_ms=100, grace_ms=2000, timeout_ms=8000, mode=MODE_GRACE, hop_ms=10.0
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        events = [
+            PitchEvent(t=0.3 + i * 0.01, hz=E4, confidence=0.95, is_onset=(i == 0))
+            for i in range(20)
+        ]
+        outcomes = feed_all(judge, events)
+        assert outcomes, "宽容期内弹对必须立刻算对"
+        assert outcomes[0].result == RESULT_CORRECT
+        assert outcomes[0].elapsed_ms < 1500, f"不该等到宽容期结束：{outcomes[0].elapsed_ms:.0f}ms"
+
+    def test_trial_note_does_not_leak_past_grace(self) -> None:
+        """宽容期内弹错的音，在宽容期结束后不得被当成答案判错（试音保护仍在）。"""
+        cfg = JudgeConfig(
+            target_pc=4, stable_ms=100, grace_ms=1000, timeout_ms=8000, mode=MODE_GRACE, hop_ms=10.0
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        # 宽容期内先试音（错音）：不应有任何结论
+        assert feed_all(judge, [ev(0.2 + i * 0.01, hz=A2) for i in range(30)]) == []
+        # 宽容期结束后继续弹同一个错音：这时才该判错
+        outcomes = feed_all(judge, [ev(1.1 + i * 0.01, hz=A2) for i in range(30)])
+        assert outcomes and outcomes[0].result == RESULT_WRONG
+
+    def test_grace_zero_judges_immediately(self) -> None:
+        cfg = JudgeConfig(
+            target_pc=4, stable_ms=100, grace_ms=0, timeout_ms=8000, mode=MODE_GRACE, hop_ms=10.0
+        )
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        outcomes = feed_all(judge, [ev(i * 0.01, hz=A2) for i in range(30)])
+        assert outcomes and outcomes[0].result == RESULT_WRONG
+
+    def test_grace_remaining_is_reported_for_ui(self) -> None:
+        """界面要能显示"试音中"——否则用户拨了却看不到任何反馈。"""
+        cfg = JudgeConfig(target_pc=4, grace_ms=2000, mode=MODE_GRACE)
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        judge.feed(ev(0.1, hz=E4))
+        assert judge.in_grace(0.5) is True
+        remaining = judge.grace_remaining_ms(0.5)
+        assert remaining is not None and 1400 < remaining <= 2000
+        assert judge.in_grace(2.5) is False
+        assert judge.grace_remaining_ms(2.5) is None
+
+    def test_no_grace_when_disabled(self) -> None:
+        cfg = JudgeConfig(target_pc=4, grace_ms=0, mode=MODE_GRACE)
+        judge = PitchClassJudge(cfg, started_at=0.0)
+        assert judge.in_grace(0.0) is False
+        assert judge.grace_remaining_ms(0.0) is None
+
 
 class TestVoting:
     def test_correct_note_is_detected(self) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -215,6 +216,9 @@ class TestQuestionGeneration:
 # 会话控制器
 # ---------------------------------------------------------------------------
 def make_session(config: SessionConfig, clock: FakeClock | None = None) -> PracticeSession:
+    # 宽容期与超时现在由会话配置决定（用户策略），测试里显式设短，
+    # 与 fast_judge_config 的意图保持一致。
+    config = replace(config, grace_seconds=0.1)
     module = PitchFindModule(random.Random(42))
     return PracticeSession(
         module,

@@ -53,6 +53,21 @@ class CountdownBar(QWidget):
             self.setVisible(True)
         self.update()
 
+    def show_grace(self, remaining_ms: float, total_ms: float, label: str = "") -> None:
+        """宽容期状态：提示"听到了，但暂时不计入判定"。
+
+        没有这个提示时，用户在宽容期内拨弦看不到任何反馈，会以为程序没听到 ——
+        实测反馈就是"空弦捕捉不敏感"。
+        """
+        self._mode = "grace"
+        self._remaining_ms = max(0.0, float(remaining_ms))
+        self._total_ms = max(1.0, float(total_ms))
+        if label:
+            self._manual_hint = label
+        if not self.isVisible():
+            self.setVisible(True)
+        self.update()
+
     def clear(self) -> None:
         self._mode = "hidden"
         self.update()
@@ -77,6 +92,29 @@ class CountdownBar(QWidget):
         font = QFont(self.font())
         font.setPointSizeF(max(9.0, self.font().pointSizeF()))
         painter.setFont(font)
+
+        if self._mode == "grace":
+            # 宽容期：蓝色中性进度条 + "试音中"提示
+            ratio = max(0.0, min(1.0, self._remaining_ms / self._total_ms))
+            label = f"{self._manual_hint} {self._remaining_ms / 1000:.1f}s"
+            metrics = painter.fontMetrics()
+            text_width = metrics.horizontalAdvance(label) + 10
+            painter.setPen(QColor(COLORS["accent"]))
+            bar = QRectF(rect.left(), rect.center().y() - 3, max(20.0, rect.width() - text_width), 6)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(COLORS["panel_alt"]))
+            painter.drawRoundedRect(bar, 3, 3)
+            filled = QRectF(bar)
+            filled.setWidth(bar.width() * ratio)
+            painter.setBrush(QColor(COLORS["accent"]))
+            painter.drawRoundedRect(filled, 3, 3)
+            painter.setPen(QColor(COLORS["accent"]))
+            painter.drawText(
+                QRectF(rect.right() - text_width, rect.top(), text_width, rect.height()),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+            return
 
         if self._mode == "manual":
             painter.setPen(QColor(COLORS["text_dim"]))

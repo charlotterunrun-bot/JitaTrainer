@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -92,6 +93,20 @@ class SessionSetupDialog(QDialog):
         form.addRow(tr("practice.timeout_seconds"), self.timeout_spin)
         self._on_timeout_changed()
 
+        # 宽容期：出题后允许试音而不判错的时长。0 = 立即判定。
+        self.grace_spin = QDoubleSpinBox()
+        self.grace_spin.setRange(0.0, 5.0)
+        self.grace_spin.setSingleStep(0.5)
+        self.grace_spin.setDecimals(1)
+        self.grace_spin.setSuffix(" " + tr("settings.seconds"))
+        self.grace_spin.setValue(max(0.0, min(5.0, base.grace_seconds)))
+        self.grace_spin.setToolTip(tr("practice.grace_hint"))
+        form.addRow(tr("practice.grace"), self.grace_spin)
+        grace_hint = QLabel(tr("practice.grace_hint"))
+        grace_hint.setObjectName("faint")
+        grace_hint.setWordWrap(True)
+        form.addRow("", grace_hint)
+
         self.scoring_check = QCheckBox(tr("settings.scoring"))
         self.scoring_check.setChecked(base.scoring_enabled)
         form.addRow("", self.scoring_check)
@@ -156,6 +171,7 @@ class SessionSetupDialog(QDialog):
             show_note_name=self.note_hint_check.isChecked(),
             timeout_mode=self.timeout_combo.currentData(),
             timeout_seconds=float(self.timeout_spin.value()),
+            grace_seconds=float(self.grace_spin.value()),
         )
 
 

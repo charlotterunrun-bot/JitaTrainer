@@ -74,6 +74,8 @@ class SessionConfig:
     timeout_mode: str = TIMEOUT_AUTO
     #: 无声音超时秒数（仅 auto 模式生效）
     timeout_seconds: float = 8.0
+    #: 宽容期秒数（需求 FR-534：出题后允许试音而不判错；0 表示立即判定）
+    grace_seconds: float = 2.0
 
     def validate(self) -> None:
         if self.mode not in MODE_IDS:
@@ -86,6 +88,12 @@ class SessionConfig:
             raise ValueError(f"未知超时处理方式：{self.timeout_mode}")
         if self.timeout_mode == TIMEOUT_AUTO and self.timeout_seconds <= 0:
             raise ValueError("自动超时的秒数必须为正")
+        if self.grace_seconds < 0:
+            raise ValueError("宽容期不能为负")
+
+    @property
+    def grace_ms(self) -> int:
+        return int(self.grace_seconds * 1000)
 
     @property
     def timeout_ms(self) -> int:
@@ -363,6 +371,16 @@ class PracticeSession:
             return None
         return self._judge.remaining_ms(now)
 
+    def grace_remaining_ms(self, now: float) -> float | None:
+        """宽容期还剩多少毫秒；不在宽容期返回 None。
+
+        界面用它提示"试音中、暂不判定"——否则用户拨了却没有任何反馈，
+        会以为程序没听到（实测反馈："空弦捕捉不敏感"）。
+        """
+        if self._judge is None or self.is_finished:
+            return None
+        return self._judge.grace_remaining_ms(now)
+
     def tick(self) -> list[SessionEvent]:
         """按时间推进（固定时长模式到点结束）。由 UI 定时器调用。"""
         if self.is_finished or self._started_at is None or self._paused:
@@ -408,8 +426,11 @@ class PracticeSession:
 
         if self._judge is None:
             config = self.judge_factory(self._question)
-            # 超时策略来自会话配置：手动推进时传 0 = 不超时，程序不会自己换题
-            config = replace(config, timeout_ms=self.config.timeout_ms)
+            # 超时与宽容期来自会话配置：手动推进时 timeout_ms=0 表示不超时；
+            # 宽容期可调 0（立即判定）到 5 秒。
+            config = replace(
+                config, timeout_ms=self.config.timeout_ms, grace_ms=self.config.grace_ms
+            )
             if self._ignore_pc is not None:
                 config = replace(config, ignore_pitch_class=self._ignore_pc)
             self._judge = PitchClassJudge(config, started_at=pitch.t)

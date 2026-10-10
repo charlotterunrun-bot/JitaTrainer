@@ -318,6 +318,13 @@ class PracticePage(QWidget):
             return
 
         now = self._now_in_event_clock()
+
+        # 宽容期优先显示："听到了，但暂时不计入判定"
+        grace = self.session.grace_remaining_ms(now) if now is not None else None
+        if grace is not None and self.config.grace_ms > 0:
+            self.countdown.show_grace(grace, self.config.grace_ms, self.tr("practice.in_grace"))
+            return
+
         remaining = self.session.remaining_ms(now) if now is not None else None
         if remaining is None:
             # 还没收到音频（例如刚开始或设备异常）：显示满格，避免闪动
