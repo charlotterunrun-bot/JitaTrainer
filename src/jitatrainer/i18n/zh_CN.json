@@ -166,5 +166,18 @@
   "practice.next_note": "下一个音",
   "practice.manual_hint": "按 回车 或 S 进入下一个音",
   "practice.advanced": "已进入下一个音（计入薄弱项）",
-  "practice.shortcuts_manual": "空格 暂停　回车/S 下一个音　Esc 结束　F11 全屏"
+  "practice.shortcuts_manual": "空格 暂停　回车/S 下一个音　Esc 结束　F11 全屏",
+  "measure.title": "测量我的吉他",
+  "measure.instructions": "依次拨响六根弦（每根弦拨 2~3 次），程序会用与练习时相同的分析链路测量，然后生成属于你这把琴的配置档案。请先确认麦克风已选好、环境尽量安静。",
+  "measure.ready": "准备好后点「开始测量」",
+  "measure.play_string": "请拨响第 {n} 弦（{note}），每根弦拨 2~3 次",
+  "measure.measuring": "正在测量…",
+  "measure.start": "开始测量",
+  "measure.again": "重新测量",
+  "measure.save_and_use": "保存并启用",
+  "measure.saved": "已保存并启用：{path}",
+  "measure.done": "测量完成：{count} 根弦有数据",
+  "measure.no_sound": "未测到声音",
+  "measure.no_problem": "✅ 没有发现问题",
+  "measure.notes": "由界面内的测量向导生成。偏差仅作提示，目标音高仍取配置档案设定的调弦。"
 }

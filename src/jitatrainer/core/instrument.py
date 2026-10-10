@@ -283,6 +283,75 @@ class ProfileError(ValueError):
     """配置档案格式或内容有问题。"""
 
 
+class StringMeasurer:
+    """在界面上逐根弦测量时的累计器（纯逻辑，不依赖音频与界面）。
+
+    界面每收到一帧检测结果就 ``add()``，一小段采集结束后取 ``result()``：
+    用**中位频率**而不是平均，避免个别跳变的帧把结果拉偏。
+    """
+
+    def __init__(self, number: int, target_midi: int) -> None:
+        self.number = number
+        self.target_midi = target_midi
+        self._pitches: list[float] = []
+        self._levels: list[float] = []
+        self._confidences: list[float] = []
+
+    def add(
+        self, hz: float, *, level_db: float | None = None, confidence: float | None = None
+    ) -> None:
+        if hz is None or hz <= 0:
+            return
+        self._pitches.append(float(hz))
+        if level_db is not None:
+            self._levels.append(float(level_db))
+        if confidence is not None:
+            self._confidences.append(float(confidence))
+
+    @property
+    def frames(self) -> int:
+        return len(self._pitches)
+
+    @property
+    def target_hz(self) -> float:
+        return midi_to_hz(self.target_midi)
+
+    @property
+    def median_hz(self) -> float | None:
+        if not self._pitches:
+            return None
+        ordered = sorted(self._pitches)
+        return ordered[len(ordered) // 2]
+
+    @property
+    def cents(self) -> float | None:
+        hz = self.median_hz
+        return None if hz is None else cents_between(hz, self.target_hz)
+
+    def result(self, *, min_frames: int = 3) -> StringMeasurement | None:
+        """样本太少时返回 None（说明这根弦没弹响或没测到）。"""
+        if self.frames < min_frames:
+            return None
+        levels = sorted(self._levels)
+        confidences = sorted(self._confidences)
+        return StringMeasurement(
+            number=self.number,
+            hz=float(self.median_hz or 0.0),
+            level_db=levels[len(levels) // 2] if levels else None,
+            confidence=confidences[len(confidences) // 2] if confidences else None,
+            expected_midi=self.target_midi,
+        )
+
+    def verdict(self, *, in_tune_cents: float = IN_TUNE_CENTS) -> str:
+        """给界面看的一句话结论。"""
+        cents = self.cents
+        if cents is None:
+            return "未测到"
+        if abs(cents) <= in_tune_cents:
+            return "准"
+        return f"{'偏高' if cents > 0 else '偏低'} {abs(cents):.0f} 音分"
+
+
 # ---------------------------------------------------------------------------
 # 内置档案
 # ---------------------------------------------------------------------------
@@ -703,6 +772,23 @@ def yin_config_from_profile(profile: InstrumentProfile, *, samplerate: int = 480
     )
 
 
+def tuning_from_profile(profile: InstrumentProfile):
+    """由配置档案构造调音器用的 ``Tuning``。
+
+    这样调音器的目标音高来自**你这把琴的档案**，而不是写死的标准调弦：
+    换了降半音、Drop D 或者别的调弦，调音器跟着变，不需要改代码。
+    """
+    from .theory.tuning import Tuning
+
+    ordered = sorted(profile.strings, key=lambda spec: -spec.number)
+    return Tuning(
+        id=profile.id,
+        name_zh=profile.name,
+        name_en=profile.name,
+        open_strings=tuple(spec.midi for spec in ordered),
+    )
+
+
 def summarise(profile: InstrumentProfile) -> str:
     """一行摘要（界面与日志用）。"""
     if not profile.is_measured:
@@ -729,6 +815,7 @@ __all__ = [
     "ProfileError",
     "ProfileWarning",
     "Resolution",
+    "StringMeasurer",
     "StringMeasurement",
     "StringSpec",
     "check_detection",
@@ -742,5 +829,6 @@ __all__ = [
     "save_profile",
     "standard_profile",
     "summarise",
+    "tuning_from_profile",
     "yin_config_from_profile",
 ]

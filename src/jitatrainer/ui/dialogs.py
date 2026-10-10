@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,7 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.instrument import StringMeasurer
 from ..core.theory.levels import LEVELS, get_level
+from ..core.theory.notes import midi_name
 from ..practice.session import (
     COUNT_PRESETS,
     DURATION_PRESETS,
@@ -154,6 +157,243 @@ class SessionSetupDialog(QDialog):
             timeout_mode=self.timeout_combo.currentData(),
             timeout_seconds=float(self.timeout_spin.value()),
         )
+
+
+class MeasureGuitarDialog(QDialog):
+    """界面内的"测量我的吉他"向导：逐根弦采集，生成配置档案。
+
+    不需要命令行：依次拨响六根弦，程序用**与练习时相同**的分析链路测量，
+    给出每根弦的音分偏差与提示，最后保存成一个配置档案并启用。
+
+    目标音高来自当前档案（所以降半音的琴也能正确测量），偏差只作提示，
+    不会把"没调准"固化成新调弦。
+    """
+
+    #: 每根弦的采集时长（秒）与开始前的稳定时间
+    MEASURE_SECONDS = 3.0
+    SETTLE_SECONDS = 0.4
+    POLL_MS = 40
+
+    def __init__(self, settings: Settings, tr, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from .audio_bridge import active_profile
+
+        self.settings = settings
+        self.tr = tr
+        self.profile = active_profile(settings)
+        self.order = [spec.number for spec in sorted(self.profile.strings, key=lambda s: -s.number)]
+        self.targets = {spec.number: spec.midi for spec in self.profile.strings}
+        self.measurers: dict[int, StringMeasurer] = {}
+        self.index = 0
+        self.audio = None
+        self.result = None
+        self.saved_path = None
+        self._elapsed = 0.0
+        self._finished = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.POLL_MS)
+        self._timer.timeout.connect(self._tick)
+
+        self.setWindowTitle(tr("measure.title"))
+        self.setMinimumWidth(520)
+        self._build_ui()
+
+    # ------------------------------------------------------------------ 界面
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        self.instructions = QLabel(self.tr("measure.instructions"))
+        self.instructions.setWordWrap(True)
+        layout.addWidget(self.instructions)
+
+        self.prompt = QLabel(self.tr("measure.ready"))
+        self.prompt.setObjectName("sectionTitle")
+        self.prompt.setStyleSheet("font-size: 20px; font-weight: 600; padding: 10px 0;")
+        layout.addWidget(self.prompt)
+
+        self.table = QGridLayout()
+        layout.addLayout(self.table)
+
+        self.status = QLabel("")
+        self.status.setObjectName("faint")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        buttons = QHBoxLayout()
+        self.start_button = QPushButton(self.tr("measure.start"))
+        self.start_button.setObjectName("primary")
+        self.start_button.clicked.connect(self.start_measurement)
+        self.save_button = QPushButton(self.tr("measure.save_and_use"))
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.save_and_use)
+        self.again_button = QPushButton(self.tr("measure.again"))
+        self.again_button.setEnabled(False)
+        self.again_button.clicked.connect(self.start_measurement)
+        close_button = QPushButton(self.tr("common.close"))
+        close_button.clicked.connect(self.reject)
+        buttons.addStretch(1)
+        buttons.addWidget(self.start_button)
+        buttons.addWidget(self.again_button)
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self._render_table()
+
+    def _render_table(self) -> None:
+        while self.table.count():
+            item = self.table.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for row, number in enumerate(self.order):
+            name = self.tr("tuner.string", n=number)
+            label = QLabel(name)
+            label.setObjectName("faint")
+            measured = QLabel("—")
+            measured.setObjectName("dim")
+            self.table.addWidget(label, row, 0)
+            self.table.addWidget(measured, row, 1)
+            self.table.addWidget(QLabel(""), row, 2)
+            setattr(self, f"_row_{number}", (measured, self.table.itemAt(row * 3 + 2).widget()))
+
+    def _set_row(self, number: int, text: str, verdict: str = "") -> None:
+        measured, verdict_label = getattr(self, f"_row_{number}")
+        measured.setText(text)
+        verdict_label.setText(verdict)
+
+    # ------------------------------------------------------------------ 测量
+    def start_measurement(self) -> None:
+        from ..ui.audio_bridge import build_session
+
+        self.measurers = {}
+        self.index = 0
+        self._elapsed = 0.0
+        self._finished = False
+        self.result = None
+        self.saved_path = None
+        self.save_button.setEnabled(False)
+        self._render_table()
+        self.status.setText("")
+
+        if self.audio is not None:
+            try:
+                self.audio.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.audio = build_session(self.settings)
+            self.audio.start()
+        except Exception as exc:  # noqa: BLE001
+            self.audio = None
+            self.prompt.setText(self.tr("error.audio_unavailable", reason=str(exc)))
+            return
+
+        self._begin_string()
+        self._timer.start()
+
+    def _begin_string(self) -> None:
+        number = self.order[self.index]
+        self._measurer = StringMeasurer(number, self.targets[number])
+        self.measurers[number] = self._measurer
+        self._elapsed = 0.0
+        self.prompt.setText(
+            self.tr("measure.play_string", n=number, note=midi_name(self.targets[number]))
+        )
+
+    def _tick(self) -> None:
+        if self._finished or self.audio is None:
+            return
+        for event in self.audio.poll():
+            if event.valid and event.hz > 0:
+                self._measurer.add(
+                    event.hz, level_db=getattr(event, "rms_db", None), confidence=event.confidence
+                )
+        self._elapsed += self.POLL_MS / 1000.0
+        if self._elapsed < self.SETTLE_SECONDS:
+            return
+        number = self.order[self.index]
+        measured = self._measurer.median_hz
+        if measured:
+            self._set_row(number, f"{measured:.2f} Hz", self._measurer.verdict())
+        if self._elapsed < self.SETTLE_SECONDS + self.MEASURE_SECONDS:
+            return
+        if not measured:
+            self._set_row(number, "—", self.tr("measure.no_sound"))
+        self.index += 1
+        if self.index < len(self.order):
+            self._begin_string()
+        else:
+            self._finish_measurement()
+
+    def _finish_measurement(self) -> None:
+        from ..core.instrument import (
+            check_measurements,
+            profile_from_measurements,
+            summarise,
+        )
+
+        self._finished = True
+        self._timer.stop()
+        if self.audio is not None:
+            try:
+                self.audio.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self.audio = None
+
+        measurements = [
+            result
+            for result in (self.measurers[number].result() for number in self.order)
+            if result is not None
+        ]
+        profile = profile_from_measurements(
+            measurements,
+            name=f"{self.profile.name}（实测）",
+            tuning=[(spec.number, spec.midi) for spec in self.profile.strings],
+            detection=self.profile.detection,
+            max_fret=self.profile.max_fret,
+            notes=self.tr("measure.notes"),
+        )
+        self.result = profile
+
+        warnings = check_measurements(measurements, profile)
+        self.prompt.setText(self.tr("measure.done", count=len(measurements)))
+        lines = [summarise(profile)]
+        for warning in warnings:
+            icon = {"info": "ℹ", "warn": "⚠", "error": "❌"}[warning.severity]
+            lines.append(f"{icon} {warning.message}")
+            if warning.advice:
+                lines.append(f"    → {warning.advice}")
+        if not warnings:
+            lines.append(self.tr("measure.no_problem"))
+        self.status.setText("\n".join(lines))
+        self.save_button.setEnabled(True)
+        self.again_button.setEnabled(True)
+
+    def save_and_use(self) -> None:
+        """保存档案并设为当前档案。"""
+        from ... import paths
+        from ..core.instrument import save_profile
+
+        if self.result is None:
+            return
+        target_dir = paths.data_dir() / "instruments"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = save_profile(self.result, target_dir / f"{self.result.id}.json")
+        self.settings.set("instrument_profile", str(path))
+        self.saved_path = path
+        self.status.setText(self.tr("measure.saved", path=path.name))
+        self.save_button.setEnabled(False)
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        """关窗前一定要停掉采集，别占着麦克风。"""
+        self._timer.stop()
+        if self.audio is not None:
+            try:
+                self.audio.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self.audio = None
+        super().closeEvent(event)
 
 
 class SessionSummaryDialog(QDialog):

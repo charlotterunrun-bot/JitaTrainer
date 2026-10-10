@@ -18,10 +18,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core.instrument import resolve_hz, tuning_from_profile
 from ...core.theory.notes import midi_name, midi_to_hz
 from ...core.theory.tuning import STANDARD, Tuning
 from ...data.settings import Settings
-from ..audio_bridge import build_session
+from ..audio_bridge import active_profile, build_session
 from ..widgets.pitch_meter import PitchMeter
 
 POLL_MS = 40
@@ -38,7 +39,9 @@ class TunerPage(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.tr = tr
-        self.tuning: Tuning = STANDARD
+        #: 目标音高来自乐器配置档案（换调弦/换琴后调音器跟着变，不需要改代码）
+        self.profile = active_profile(settings)
+        self.tuning: Tuning = tuning_from_profile(self.profile)
         self.session = None
         self._recent: deque[tuple[int, float]] = deque(maxlen=SMOOTHING_FRAMES)
         self._timer = QTimer(self)
@@ -46,6 +49,19 @@ class TunerPage(QWidget):
         self._timer.timeout.connect(self._poll)
 
         self._build_ui()
+
+    def reload_profile(self) -> None:
+        """重新读取乐器配置档案（在「乐器」菜单里换了档案后调用）。"""
+        self.profile = active_profile(self.settings)
+        self.tuning = tuning_from_profile(self.profile)
+        self.target_combo.clear()
+        for string_no in range(6, 0, -1):
+            midi = self.tuning.string_target_midi(string_no)
+            label = f"{self.tr('tuner.string', n=string_no)} · {midi_name(midi)}"
+            self.target_combo.addItem(label, string_no)
+        self.target_combo.insertItem(0, self.tr("tuner.auto"), None)
+        self.target_combo.setCurrentIndex(0)
+        self._on_target_changed()
 
     # ------------------------------------------------------------------ 界面
     def _build_ui(self) -> None:
@@ -160,9 +176,22 @@ class TunerPage(QWidget):
         self.meter.set_pitch(display_hz, confidence)
 
     def _smoothed_pitch(self, latest) -> tuple[float, float]:  # noqa: ANN001
-        """用最近若干帧的众数决定显示音名，减少八度跳动。"""
+        """用最近若干帧的众数决定显示音名，减少八度跳动。
+
+        选定某根弦时，还用**乐器档案里的预期音高**消解八度：
+        若读数与预期弦呈八度/十二度关系，按预期弦显示，避免"明明在调 1 弦，
+        却因为锁到二次谐波而显示成高八度"这种显示歧义。
+        """
         if not self._recent:
             return latest.hz, latest.confidence
+
+        string_no = self._selected_string()
+        if string_no is not None:
+            expected = self.tuning.string_target_midi(string_no)
+            resolution = resolve_hz(latest.hz, self.profile, expect_midi=expected)
+            if resolution.adjusted_from is not None or resolution.status in ("exact", "off_tune"):
+                return resolution.hz, latest.confidence
+
         counts = Counter(pc for pc, _midi in self._recent)
         mode_pc, _count = counts.most_common(1)[0]
         midis = sorted(midi for pc, midi in self._recent if pc == mode_pc)

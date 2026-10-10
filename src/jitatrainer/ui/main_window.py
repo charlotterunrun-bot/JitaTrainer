@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         show_action = instrument_menu.addAction(self.tr("instrument.show"))
         show_action.triggered.connect(self.show_instrument_profile)
         measure_action = instrument_menu.addAction(self.tr("instrument.measure"))
-        measure_action.triggered.connect(self.show_measure_help)
+        measure_action.triggered.connect(self.open_measure_dialog)
 
         menu.addSeparator()
         quit_action = menu.addAction(self.tr("common.close"))
@@ -190,8 +190,19 @@ class MainWindow(QMainWindow):
             lines.append(profile.notes)
         QMessageBox.information(self, self.tr("instrument.show"), "\n".join(lines))
 
+    def open_measure_dialog(self) -> None:
+        """打开界面内的"测量我的吉他"向导（不需要命令行）。"""
+        from .dialogs import MeasureGuitarDialog
+
+        dialog = MeasureGuitarDialog(self.settings, self.tr, self)
+        dialog.exec()
+        if dialog.saved_path is not None:
+            summary = dialog.result.name if dialog.result is not None else ""
+            self.statusBar().showMessage(self.tr("instrument.loaded", summary=summary))
+            self._refresh_instrument_status()
+
     def show_measure_help(self) -> None:
-        """怎么测量自己的吉他。"""
+        """命令行测量的说明（保留给喜欢脚本的用户）。"""
         text = self.tr(
             "instrument.measure_help",
             path=str(paths.app_root()),
@@ -199,6 +210,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, self.tr("instrument.measure"), text)
 
     def _refresh_instrument_status(self) -> None:
+        # 调音器的目标音高来自档案，换档案后必须让它重读
+        self.tuner.reload_profile()
         self.home.refresh()
 
     # ------------------------------------------------------------------ 数据

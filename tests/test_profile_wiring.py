@@ -134,6 +134,53 @@ class TestMeasuredProfileDrivesDetection:
         assert result_legacy.hz == pytest.approx(f0, rel=0.03)
 
 
+class TestTunerFollowsProfile:
+    """调音器的目标音高必须来自档案（换调弦/换琴后跟着变，而不是写死标准调弦）。"""
+
+    def _page(self, settings: Settings):  # noqa: ANN202
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        from jitatrainer.i18n import Translator
+        from jitatrainer.ui.pages.tuner import TunerPage
+
+        QApplication.instance() or QApplication([])
+        return TunerPage(settings, Translator("zh_CN"))
+
+    def test_standard_profile_gives_standard_targets(self, settings: Settings) -> None:
+        from jitatrainer.core.theory.notes import midi_name
+
+        page = self._page(settings)
+        targets = [midi_name(page.tuning.string_target_midi(n)) for n in (6, 5, 4, 3, 2, 1)]
+        assert targets == ["E2", "A2", "D3", "G3", "B3", "E4"]
+
+    def test_alternate_tuning_profile_changes_targets(self, settings: Settings, tmp_path) -> None:
+        from jitatrainer.core.instrument import profile_from_tuning
+        from jitatrainer.core.theory.notes import midi_name
+
+        page = self._page(settings)
+        path = save_profile(profile_from_tuning("half_step_down"), tmp_path / "half.json")
+        settings.set("instrument_profile", str(path))
+        page.reload_profile()
+
+        targets = [midi_name(page.tuning.string_target_midi(n)) for n in (6, 5, 4, 3, 2, 1)]
+        assert targets == ["D#2", "G#2", "C#3", "F#3", "A#3", "D#4"]
+
+    def test_tuner_octave_resolution_uses_expected_string(self, settings: Settings) -> None:
+        """选定弦后，锁到二次谐波的读数按该弦的八度显示，不显示成高八度。"""
+        from jitatrainer.core.instrument import standard_profile, resolve_hz
+        from jitatrainer.core.theory.notes import midi_to_hz
+
+        profile = standard_profile()
+        e4 = midi_to_hz(64)
+        # 读数正好是高八度（锁到二次谐波）→ 应换算回 E4
+        resolution = resolve_hz(e4 * 2, profile, expect_midi=64)
+        assert resolution.midi == 64
+        assert resolution.status == "octave_adjusted"
+
+
 class TestProfileFileCompatibility:
     def test_measurement_tool_output_is_loadable(self, tmp_path) -> None:
         """tools/measure_guitar.py 写出的文件必须能被程序读回。"""
