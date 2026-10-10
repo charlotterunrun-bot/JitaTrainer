@@ -20,7 +20,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jitatrainer.core.audio.pitch_yin import PitchDetector
+from jitatrainer.core.audio.pitch_yin import PitchDetector, YinConfig
+
+#: 本文件所有固件都录自 2026-10-07 那支低频响应极差的麦克风（基频只有谐波的 1/18），
+#: 因此显式启用 presence 模式 —— 这条低频存在性规则正是为这种设备准备的。
+#: 换成正常麦克风后它会误把正确读数砍半，所以程序默认不启用它。
+LEGACY_DETECTOR = lambda: PitchDetector(YinConfig(harmonic_mode="presence"))
 from jitatrainer.core.theory.notes import hz_to_midi, midi_to_hz
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_open_strings.wav"
@@ -44,6 +49,70 @@ pytestmark = pytest.mark.skipif(not FIXTURE.is_file(), reason="缺少真实录�
 def load_fixture() -> np.ndarray:
     with wave.open(str(FIXTURE), "rb") as handle:
         return np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2").astype(np.float64) / 32768.0
+
+
+NEW_MIC_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "real_new_mic_e4.wav"
+
+
+@lru_cache(maxsize=1)
+def load_new_mic_fixture() -> np.ndarray:
+    """2026-10-10 的新麦克风录音（第 1 弦 E4 的两次拨弦）。"""
+    with wave.open(str(NEW_MIC_FIXTURE), "rb") as handle:
+        data = np.frombuffer(handle.readframes(handle.getnframes()), dtype="<i2")
+    return data.astype(np.float64) / 32768.0
+
+
+class TestNewMicrophoneNoOverCorrection:
+    """回归：换正常麦克风后，"固定谐波纠正"会把正确读数砍半。
+
+    固件是用户新录音（已调音、新麦克风）里第 1 弦 E4 的两次拨弦。
+    默认模式下必须原样读出 E4；旧的 presence 规则会把它砍成 E3——误差 1200 音分。
+
+    这条固件的价值：**证明低频存在性规则不能默认开启**。
+    """
+
+    @pytest.mark.skipif(not NEW_MIC_FIXTURE.is_file(), reason="缺少新麦克风固件")
+    def test_default_mode_reads_first_string_correctly(self) -> None:
+        samples = load_new_mic_fixture()
+        detector = PitchDetector()  # 默认 harmonic_mode="auto"
+        best = None
+        for offset in range(0, len(samples) - WINDOW, HOP):
+            result = detector.detect(samples[offset : offset + WINDOW])
+            if result.hz > 0 and (best is None or result.confidence > best.confidence):
+                best = result
+        assert best is not None and best.hz > 0
+        midi = hz_to_midi(best.hz)
+        assert abs(midi - 64) < 0.6, f"第 1 弦 E4 读数错误：{best.hz:.1f}Hz（MIDI {midi:.2f}）"
+        assert not best.harmonic_corrected, "默认模式下不该做低频向下修正"
+
+    @pytest.mark.skipif(not NEW_MIC_FIXTURE.is_file(), reason="缺少新麦克风固件")
+    def test_off_mode_also_reads_correctly(self) -> None:
+        samples = load_new_mic_fixture()
+        detector = PitchDetector(YinConfig(harmonic_mode="off"))
+        best = None
+        for offset in range(0, len(samples) - WINDOW, HOP):
+            result = detector.detect(samples[offset : offset + WINDOW])
+            if result.hz > 0 and (best is None or result.confidence > best.confidence):
+                best = result
+        assert best is not None
+        assert abs(hz_to_midi(best.hz) - 64) < 0.6
+
+    @pytest.mark.skipif(not NEW_MIC_FIXTURE.is_file(), reason="缺少新麦克风固件")
+    def test_analyzer_default_is_safe_for_this_recording(self) -> None:
+        """整条分析链路（默认配置）也要读出 E4。"""
+        from jitatrainer.core.audio.analyzer import AnalyzerConfig, FrameAnalyzer
+
+        samples = load_new_mic_fixture()
+        config = AnalyzerConfig()
+        analyzer = FrameAnalyzer(config)
+        voiced = []
+        for index in range(0, len(samples) - config.required_samples, HOP):
+            event = analyzer.process(samples[index : index + config.required_samples], 1.0)
+            if event is not None and event.valid:
+                voiced.append(event)
+        assert voiced, "分析链路未能检出音高"
+        best = max(voiced, key=lambda event: event.confidence)
+        assert abs(hz_to_midi(best.hz) - 64) < 0.6, f"整链路读数错误：{best.hz:.1f}Hz"
 
 
 @lru_cache(maxsize=1)
@@ -96,7 +165,7 @@ class TestTwelfthLock:
 
     def test_not_locked_to_third_harmonic(self) -> None:
         frame = loudest_frame(load_wav(TWELFTH_FIXTURE))
-        result = PitchDetector().detect(frame)
+        result = LEGACY_DETECTOR().detect(frame)
         assert result.valid, "未检测到音高"
 
         detected_midi = hz_to_midi(result.hz)
@@ -109,7 +178,7 @@ class TestTwelfthLock:
     def test_reported_frequency_is_in_bass_region(self) -> None:
         """十二度锁定会报 ~318Hz；修复后应落在 90–130Hz。"""
         frame = loudest_frame(load_wav(TWELFTH_FIXTURE))
-        result = PitchDetector().detect(frame)
+        result = LEGACY_DETECTOR().detect(frame)
         assert result.valid
         assert 90.0 < result.hz < 130.0, f"第 5 弦频率异常：{result.hz:.1f}Hz"
 
@@ -128,7 +197,7 @@ class TestRealRecording:
     def test_no_octave_error_on_any_string(self, samples: np.ndarray, index: int) -> None:
         """核心回归：任何一根弦都不允许落到相差一个八度的音区。"""
         frame = segment_frame(samples, index)
-        result = PitchDetector().detect(frame)
+        result = LEGACY_DETECTOR().detect(frame)
         assert result.valid, f"{STRING_NAMES[index]} 未检测到音高（固件窗口能量过低）"
 
         detected_midi = hz_to_midi(result.hz)
@@ -143,7 +212,7 @@ class TestRealRecording:
 
     def test_low_e_string_is_not_reported_an_octave_up(self, samples: np.ndarray) -> None:
         """第 6 弦曾经被报成 155Hz（高八度），修复后必须落在 60–110Hz。"""
-        result = PitchDetector().detect(segment_frame(samples, 0))
+        result = LEGACY_DETECTOR().detect(segment_frame(samples, 0))
         assert result.valid
         assert 60.0 < result.hz < 110.0, f"第 6 弦频率异常：{result.hz:.1f}Hz"
 
@@ -151,7 +220,7 @@ class TestRealRecording:
         """琴整体偏低，音名可能落到相邻半音上，但必须与"最接近的标准音"一致。"""
         detected: list[str] = []
         for index in range(len(EXPECTED_MIDI)):
-            result = PitchDetector().detect(segment_frame(samples, index))
+            result = LEGACY_DETECTOR().detect(segment_frame(samples, index))
             assert result.valid, f"{STRING_NAMES[index]} 未检测到音高"
             expected = EXPECTED_MIDI[index]
             nearest_allowed = {(expected + delta) % 12 for delta in (-1, 0, 1)}

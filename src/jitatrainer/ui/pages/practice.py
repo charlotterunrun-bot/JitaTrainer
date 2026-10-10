@@ -83,6 +83,10 @@ class PracticePage(QWidget):
         self._timer.timeout.connect(self._poll)
         self._correct_flash_until = 0.0
         self._last_question: Question | None = None
+        #: 连续"无法用本琴解释"的检测次数。用于发现麦克风/环境问题并提示用户，
+        #: 而不是默默按某个猜测处理（需求：声音不符预期时提示用户）。
+        self._unexplained_run = 0
+        self._env_warned = False
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._build_ui()
@@ -318,6 +322,35 @@ class PracticePage(QWidget):
         self.tab.set_highlight(True)  # 高亮标准位置帮用户找到答案
         self.feedback.setStyleSheet("color: #e05c5c;")
         self.feedback.setText(self.tr("practice.wrong", played=played, target=target))
+        self._check_environment(event)
+
+    def _check_environment(self, event: SessionEvent) -> None:
+        """检测到的音高若无法用本琴解释，连续几次就提示用户检查设备。
+
+        答错本身很正常（练习就是要弹错）；这里针对的是"这个音**不属于这把琴
+        能弹出的音**"——那通常意味着弹了别的弦/别的乐器、麦克风摆位或增益有问题。
+        这正是"发现声音不符合预期时提示用户处理"的实时路径。
+        """
+        hz = event.outcome.detected_hz if event.outcome else None
+        profile = getattr(self.audio, "profile", None) if self.audio is not None else None
+        if profile is None or not hz or hz <= 0:
+            return
+        try:
+            from ...core.instrument import resolve_hz
+
+            resolution = resolve_hz(hz, profile)
+        except Exception:  # noqa: BLE001 - 提示功能不该影响练习
+            return
+
+        if resolution.status == "unexplained":
+            self._unexplained_run += 1
+        else:
+            self._unexplained_run = 0
+
+        if self._unexplained_run >= 3 and not self._env_warned:
+            self._env_warned = True
+            self.feedback.setStyleSheet("color: #e8b339;")
+            self.feedback.setText(self.tr("practice.env_warning"))
 
     def _on_timeout(self) -> None:
         self.tab.set_highlight(True)

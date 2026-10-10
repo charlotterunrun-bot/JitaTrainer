@@ -157,6 +157,7 @@ class HomePage(QWidget):
         due_text, advice_text = self._learning_status()
         rows = [
             (self.tr("home.profiles"), self.profile_name),
+            (self.tr("instrument.line"), self._instrument_text()),
             (self.tr("settings.input_device"), device_name),
             (self.tr("settings.stable_preset"), self._preset_label()),
             ("起音门限", f"{self.settings.get_float('noise_floor_db', -60.0) + self.settings.get_float('gate_offset_db', 12.0):.1f} dB"),
@@ -172,6 +173,24 @@ class HomePage(QWidget):
 
         self.advice_label.setText(advice_text)
         self.advice_label.setVisible(bool(advice_text))
+
+    def _instrument_text(self) -> str:
+        """当前乐器配置档案摘要（没有实测时说明是内置默认）。"""
+        from ...core.instrument import summarise
+        from ..audio_bridge import active_profile
+
+        try:
+            profile = active_profile(self.settings)
+        except Exception:  # noqa: BLE001 - 首页不该因为配置读不出来而崩
+            return "—"
+        text = summarise(profile)
+        if not profile.is_measured:
+            text += "｜" + (
+                "未测量（「乐器」菜单里可测量）"
+                if self.tr.language == "zh_CN"
+                else "not measured"
+            )
+        return text
 
     def _learning_status(self) -> tuple[str, str]:
         """到期复习数量与难度进阶建议（M3）。"""

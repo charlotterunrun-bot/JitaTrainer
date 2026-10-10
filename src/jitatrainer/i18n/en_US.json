@@ -2,7 +2,6 @@
   "app.title": "JitaTrainer",
   "app.subtitle": "Note finding · Microphone judging · Spaced repetition",
   "app.version": "Version",
-
   "common.ok": "OK",
   "common.cancel": "Cancel",
   "common.next": "Next",
@@ -17,7 +16,6 @@
   "common.no": "No",
   "common.start": "Start",
   "common.stop": "Stop",
-
   "home.profiles": "Profiles",
   "home.modules": "Practice modules",
   "home.stats": "Statistics",
@@ -27,10 +25,8 @@
   "home.no_due": "Nothing due today",
   "home.review_status": "Review plan",
   "home.suggest_unlock": "Suggested next level: {level}",
-
   "module.pitch_find.name": "Note Finding",
   "module.pitch_find.desc": "Read the TAB on screen and play the note on your guitar",
-
   "practice.level": "Level (position)",
   "practice.mode": "Session mode",
   "practice.mode.duration": "Fixed duration",
@@ -64,7 +60,6 @@
   "practice.source.weak": "Weak",
   "practice.source.requeue": "Requeue",
   "practice.source.new": "New",
-
   "tuner.title": "Tuner",
   "tuner.auto": "Auto detect",
   "tuner.target": "Target",
@@ -73,7 +68,6 @@
   "tuner.flat": "Flat",
   "tuner.sharp": "Sharp",
   "tuner.string": "String {n}",
-
   "wizard.title": "First-run setup",
   "wizard.device.title": "Choose input device",
   "wizard.device.desc": "Select the microphone used for listening. A USB microphone is recommended.",
@@ -85,7 +79,6 @@
   "wizard.calibrate.desc": "Pluck each open string in turn: {string}",
   "wizard.calibrate.done": "Calibration finished, {count}/6 strings detected",
   "wizard.calibrate.failed": "Not detected — please check the microphone and strings",
-
   "settings.title": "Settings",
   "settings.general": "General",
   "settings.audio": "Audio",
@@ -133,7 +126,6 @@
   "settings.clear_stats": "Clear this profile's data",
   "settings.clear_confirm": "Delete all practice records of profile \"{name}\"?\n(Items, sessions and attempts are removed; a backup is taken first.)",
   "settings.clear_done": "Cleared this profile's practice records",
-
   "stats.title": "Statistics",
   "stats.session_summary": "Session summary",
   "stats.accuracy": "Accuracy (first attempt)",
@@ -153,8 +145,19 @@
   "stats.no_weak": "Nothing to improve right now",
   "stats.wrong_times": "{count} misses",
   "stats.export_done": "Exported: {detail} detail rows, {daily} daily rows → {path}",
-
   "error.audio_unavailable": "Audio device unavailable: {reason}",
   "error.no_input_device": "No input device found — please check your microphone",
-  "error.db_locked": "Database is locked — please close other JitaTrainer windows"
+  "error.db_locked": "Database is locked — please close other JitaTrainer windows",
+  "instrument.menu": "Instrument",
+  "instrument.choose": "Choose profile…",
+  "instrument.reset": "Reset to built-in standard",
+  "instrument.reset_done": "Reset to the built-in standard profile (conservative detection)",
+  "instrument.show": "Current instrument profile",
+  "instrument.loaded": "Loaded profile: {summary}",
+  "instrument.mode": "Harmonic-check mode",
+  "instrument.max_fret": "Highest fret",
+  "instrument.measure": "Measure my guitar",
+  "instrument.measure_help": "Generate a profile for your own guitar from a recording:\n\n1. Record yourself plucking strings 6-5-4-3-2-1 (2-3 times each);\n2. Put the file next to the program and run:\n\n   python tools\\measure_guitar.py your-recording.m4a --name \"My guitar\"\n\n3. The profile lands in data\\instruments\\;\n4. Load it here with \"Choose profile...\".\n\nThe measurement reports each string's cents offset, level balance and which detection strategy to use.\nProgram folder: {path}",
+  "instrument.line": "Instrument",
+  "practice.env_warning": "Several pitches in a row could not be explained - check microphone placement and gain, or make sure no other instrument is sounding"
 }

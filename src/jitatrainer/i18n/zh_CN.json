@@ -2,7 +2,6 @@
   "app.title": "JitaTrainer 吉他训练器",
   "app.subtitle": "看谱找音 · 麦克风判定 · 记忆曲线复习",
   "app.version": "版本",
-
   "common.ok": "确定",
   "common.cancel": "取消",
   "common.next": "下一步",
@@ -17,7 +16,6 @@
   "common.no": "否",
   "common.start": "开始",
   "common.stop": "停止",
-
   "home.profiles": "学习档案",
   "home.modules": "练习模块",
   "home.stats": "统计报告",
@@ -27,10 +25,8 @@
   "home.no_due": "今日无待复习项",
   "home.review_status": "复习计划",
   "home.suggest_unlock": "建议解锁下一难度：{level}",
-
   "module.pitch_find.name": "看谱找音",
   "module.pitch_find.desc": "屏幕给出六线谱音符，你在吉他上弹出正确音高",
-
   "practice.level": "难度（把位）",
   "practice.mode": "练习模式",
   "practice.mode.duration": "固定时长",
@@ -64,7 +60,6 @@
   "practice.source.weak": "强化",
   "practice.source.requeue": "回炉",
   "practice.source.new": "新题",
-
   "tuner.title": "调音器",
   "tuner.auto": "自动识别",
   "tuner.target": "目标",
@@ -73,7 +68,6 @@
   "tuner.flat": "偏低",
   "tuner.sharp": "偏高",
   "tuner.string": "第 {n} 弦",
-
   "wizard.title": "首次运行向导",
   "wizard.device.title": "选择输入设备",
   "wizard.device.desc": "请选择用于拾音的麦克风，建议使用外接 USB 麦克风。",
@@ -85,7 +79,6 @@
   "wizard.calibrate.desc": "请依次拨响六根空弦：{string}",
   "wizard.calibrate.done": "校准完成，识别到 {count}/6 根弦",
   "wizard.calibrate.failed": "未能识别，请检查麦克风与琴弦",
-
   "settings.title": "设置",
   "settings.general": "通用",
   "settings.audio": "音频",
@@ -133,7 +126,6 @@
   "settings.clear_stats": "清空本档案统计",
   "settings.clear_confirm": "确定清空档案「{name}」的全部练习记录吗？\n（训练项、会话、答题明细都会删除；清空前会自动备份）",
   "settings.clear_done": "已清空本档案的练习记录",
-
   "stats.title": "统计报告",
   "stats.session_summary": "本次小结",
   "stats.accuracy": "正确率（首次尝试）",
@@ -153,8 +145,19 @@
   "stats.no_weak": "暂时没有需要加强的音",
   "stats.wrong_times": "错 {count} 次",
   "stats.export_done": "已导出：明细 {detail} 行、逐日 {daily} 行 → {path}",
-
   "error.audio_unavailable": "无法使用音频设备：{reason}",
   "error.no_input_device": "未找到可用的输入设备，请检查麦克风连接",
-  "error.db_locked": "数据库被占用，请关闭其他 JitaTrainer 窗口"
+  "error.db_locked": "数据库被占用，请关闭其他 JitaTrainer 窗口",
+  "instrument.menu": "乐器",
+  "instrument.choose": "选择配置档案…",
+  "instrument.reset": "恢复内置标准档案",
+  "instrument.reset_done": "已恢复内置标准档案（保守检测策略）",
+  "instrument.show": "当前配置档案",
+  "instrument.loaded": "已加载配置档案：{summary}",
+  "instrument.mode": "谐波校验模式",
+  "instrument.max_fret": "最高品",
+  "instrument.measure": "测量我的吉他",
+  "instrument.measure_help": "用一段录音生成属于你这把琴的配置档案：\n\n1. 用录音软件依次拨响 6→5→4→3→2→1 弦（每根弦 2~3 次）；\n2. 把文件放到程序目录，然后运行：\n\n   python tools\\measure_guitar.py 你的录音.m4a --name \"我的吉他\"\n\n3. 生成的文件在 data\\instruments\\ 下；\n4. 回到这里用「选择配置档案…」加载它。\n\n测量会告诉你每根弦的音分偏差、电平是否均衡、以及该用哪种检测策略。\n程序目录：{path}",
+  "instrument.line": "乐器档案",
+  "practice.env_warning": "连续多次检测到无法解释的音高——请检查麦克风摆位与增益，或确认是否弹了别的乐器"
 }

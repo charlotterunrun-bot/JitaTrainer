@@ -72,7 +72,7 @@ class TestLowFrequencyEnhancement:
         """记录短窗口的既有局限：中位频率落在二次谐波上，低音区命中率明显偏低。"""
         samples = load_fixture()
         analyzer = FrameAnalyzer(
-            AnalyzerConfig(low_enhance=False),
+            AnalyzerConfig(low_enhance=False, harmonic_mode="presence"),
             gate=GateConfig(noise_floor_db=-90.0, offset_db=5.0),
         )
         values = scan(samples, analyzer, 2048)
@@ -86,8 +86,8 @@ class TestLowFrequencyEnhancement:
         samples = load_fixture()
         gate = GateConfig(noise_floor_db=-90.0, offset_db=5.0)
 
-        fast = scan(samples, FrameAnalyzer(AnalyzerConfig(low_enhance=False), gate=gate), 2048)
-        enhanced = scan(samples, FrameAnalyzer(AnalyzerConfig(low_enhance=True), gate=gate), 8192)
+        fast = scan(samples, FrameAnalyzer(AnalyzerConfig(low_enhance=False, harmonic_mode="presence"), gate=gate), 2048)
+        enhanced = scan(samples, FrameAnalyzer(AnalyzerConfig(low_enhance=True, harmonic_mode="presence"), gate=gate), 8192)
 
         assert fast and enhanced
         assert float(np.median(enhanced)) < 120.0, (
@@ -103,7 +103,7 @@ class TestLowFrequencyEnhancement:
     def test_majority_vote_picks_bass_region(self) -> None:
         """判定层的多数表决：整段的中位结果必须落在 E2 音区（±1.5 半音）。"""
         samples = load_fixture()
-        analyzer = FrameAnalyzer(AnalyzerConfig(), gate=GateConfig(noise_floor_db=-90.0, offset_db=5.0))
+        analyzer = FrameAnalyzer(AnalyzerConfig(harmonic_mode="presence"), gate=GateConfig(noise_floor_db=-90.0, offset_db=5.0))
         values = scan(samples, analyzer, 8192)
         assert values
         median_midi = hz_to_midi(float(np.median(values)))
@@ -119,7 +119,7 @@ class TestLowFrequencyEnhancement:
         f0 = midi_to_hz(64)  # E4
         signal = synth_guitar_note(f0, seed=64)
         frame = signal[7200 : 7200 + 8192]
-        analyzer = FrameAnalyzer(AnalyzerConfig(), gate=GateConfig(noise_floor_db=-90.0, offset_db=5.0))
+        analyzer = FrameAnalyzer(AnalyzerConfig(harmonic_mode="presence"), gate=GateConfig(noise_floor_db=-90.0, offset_db=5.0))
         event = analyzer.process(frame, 0.0)
         assert event.valid
         assert abs(hz_to_midi(event.hz) - 64) < 0.5
@@ -127,8 +127,8 @@ class TestLowFrequencyEnhancement:
 
     def test_required_samples_reflects_low_window(self) -> None:
         assert AnalyzerConfig().required_samples == 8192
-        assert AnalyzerConfig(low_enhance=False).required_samples == 2048
+        assert AnalyzerConfig(low_enhance=False, harmonic_mode="presence").required_samples == 2048
 
     def test_low_enhance_can_be_disabled(self) -> None:
-        analyzer = FrameAnalyzer(AnalyzerConfig(low_enhance=False))
+        analyzer = FrameAnalyzer(AnalyzerConfig(low_enhance=False, harmonic_mode="presence"))
         assert analyzer.low_detector is None

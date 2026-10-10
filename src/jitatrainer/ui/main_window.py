@@ -122,9 +122,83 @@ class MainWindow(QMainWindow):
         clear_action = data_menu.addAction(self.tr("settings.clear_stats"))
         clear_action.triggered.connect(self.clear_stats)
 
+        # 乐器菜单：配置档案决定检测策略（谐波校验模式、低频增强等）
+        instrument_menu = self.menuBar().addMenu(self.tr("instrument.menu"))
+        choose_action = instrument_menu.addAction(self.tr("instrument.choose"))
+        choose_action.triggered.connect(self.choose_instrument_profile)
+        reset_action = instrument_menu.addAction(self.tr("instrument.reset"))
+        reset_action.triggered.connect(self.reset_instrument_profile)
+        instrument_menu.addSeparator()
+        show_action = instrument_menu.addAction(self.tr("instrument.show"))
+        show_action.triggered.connect(self.show_instrument_profile)
+        measure_action = instrument_menu.addAction(self.tr("instrument.measure"))
+        measure_action.triggered.connect(self.show_measure_help)
+
         menu.addSeparator()
         quit_action = menu.addAction(self.tr("common.close"))
         quit_action.triggered.connect(self.close)
+
+    # ------------------------------------------------------------------ 乐器档案
+    def choose_instrument_profile(self) -> None:
+        """选择乐器配置档案文件。"""
+        from ..ui.audio_bridge import active_profile
+
+        current = active_profile(self.settings)
+        start_dir = paths.data_dir() / "instruments"
+        start_dir.mkdir(parents=True, exist_ok=True)
+        target, _selected = QFileDialog.getOpenFileName(
+            self, self.tr("instrument.choose"), str(start_dir), "JSON (*.json)"
+        )
+        if not target:
+            return
+        try:
+            from ..core.instrument import load_profile
+
+            profile = load_profile(target)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, self.tr("instrument.menu"), f"{type(exc).__name__}: {exc}")
+            return
+        self.settings.set("instrument_profile", target)
+        del current
+        self.statusBar().showMessage(self.tr("instrument.loaded", summary=profile.name))
+        self._refresh_instrument_status()
+
+    def reset_instrument_profile(self) -> None:
+        """恢复内置标准档案（保守检测策略）。"""
+        self.settings.set("instrument_profile", "")
+        self.statusBar().showMessage(self.tr("instrument.reset_done"))
+        self._refresh_instrument_status()
+
+    def show_instrument_profile(self) -> None:
+        """显示当前档案的摘要与逐弦实测。"""
+        from ..core.instrument import summarise
+        from ..ui.audio_bridge import active_profile
+
+        profile = active_profile(self.settings)
+        lines = [summarise(profile), ""]
+        lines.append(f"{self.tr('instrument.mode')}：{profile.detection.harmonic_mode}")
+        lines.append(f"{self.tr('instrument.max_fret')}：{profile.max_fret}")
+        lines.append("")
+        for spec in profile.strings:
+            offset = spec.offset_cents
+            measured = f"{spec.measured_hz:.2f} Hz" if spec.measured_hz else "—"
+            cents = f"{offset:+.1f} 音分" if offset is not None else "—"
+            lines.append(f"  第{spec.number}弦 {spec.note_name:>3}  实测 {measured:>10}  {cents}")
+        if profile.notes:
+            lines.append("")
+            lines.append(profile.notes)
+        QMessageBox.information(self, self.tr("instrument.show"), "\n".join(lines))
+
+    def show_measure_help(self) -> None:
+        """怎么测量自己的吉他。"""
+        text = self.tr(
+            "instrument.measure_help",
+            path=str(paths.app_root()),
+        )
+        QMessageBox.information(self, self.tr("instrument.measure"), text)
+
+    def _refresh_instrument_status(self) -> None:
+        self.home.refresh()
 
     # ------------------------------------------------------------------ 数据
     def open_data_directory(self) -> None:

@@ -25,6 +25,8 @@ GLOBAL_KEYS = frozenset(
         "calibration_offset_cents",
         "wizard_completed",
         "last_profile_id",
+        # 乐器配置档案描述的是"这把琴 + 这套录音环境"，与学习者档案无关
+        "instrument_profile",
     }
 )
 
@@ -39,6 +41,9 @@ DEFAULTS: dict[str, str] = {
     "calibration_offset_cents": "0.0",
     "wizard_completed": "false",
     "last_profile_id": "1",
+    # 乐器配置档案路径。空 = 内置标准调弦档案（conservative 检测策略）。
+    # 由 tools/measure_guitar.py 或界面里的"测量我的吉他"生成。
+    "instrument_profile": "",
     # 档案
     "stable_preset": "balanced",
     "stable_ms_custom": "",

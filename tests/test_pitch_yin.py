@@ -129,10 +129,13 @@ class TestHarmonicCorrection:
 
         这里直接对校正函数做单元测试：给定"检测值是真实基频的两倍"，
         且 f0/2 处存在（较弱的）谱峰，必须向下修正一个八度。
+
+        **必须显式指定 mode="presence"**：这条低频存在性规则是为"低频响应极差的
+        麦克风"准备的补偿，单帧频谱无法区分真锁定与琴箱共振，因此程序**默认不启用**。
         """
         f0 = midi_to_hz(40)  # E2 = 82.41Hz
         frame = _synth_weak_fundamental(f0, fundamental_gain=0.02)
-        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 2)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 2, mode="presence")
         assert changed, "弱基频场景未被修正（低音弦会报高八度）"
         assert corrected == pytest.approx(f0, rel=0.02)
 
@@ -140,12 +143,39 @@ class TestHarmonicCorrection:
         """真实录音暴露的第二种锁定：基频只有三次谐波的 1/19 时，YIN 报十二度。
 
         此时 hz/3 处有（较弱的）基频峰、且其二次谐波也有支持，必须向下修正。
+        同样需要显式 mode="presence"。
         """
         f0 = midi_to_hz(45)  # A2 = 110Hz
         frame = _synth_weak_fundamental_twelfth(f0)
-        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 3)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 3, mode="presence")
         assert changed, "十二度锁定未被修正（第 5 弦会报成 D#4）"
         assert corrected == pytest.approx(f0, rel=0.03)
+
+    def test_default_mode_does_not_apply_low_band_rule(self) -> None:
+        """默认（auto）不启用低频存在性规则 —— 换成正常麦克风后它会误伤。"""
+        f0 = midi_to_hz(40)
+        frame = _synth_weak_fundamental(f0, fundamental_gain=0.02)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 2)
+        assert not changed, "默认模式不应该做低频向下修正"
+        assert corrected == pytest.approx(f0 * 2)
+
+    def test_off_mode_never_corrects(self) -> None:
+        """off 模式完全不做频谱纠正。"""
+        f0 = midi_to_hz(40)
+        frame = _synth_weak_fundamental(f0, fundamental_gain=0.02)
+        corrected, changed = harmonic_correct(frame, SAMPLERATE, f0 * 2, mode="off")
+        assert not changed
+        assert corrected == pytest.approx(f0 * 2)
+        # 高频分支也要一起关掉
+        high = midi_to_hz(76)
+        frame_high = _synth_weak_fundamental(high, fundamental_gain=0.02)
+        _corrected, changed_high = harmonic_correct(frame_high, SAMPLERATE, high, mode="off")
+        assert not changed_high
+
+    def test_unknown_mode_rejected(self) -> None:
+        frame = _synth_weak_fundamental(midi_to_hz(40))
+        with pytest.raises(ValueError):
+            harmonic_correct(frame, SAMPLERATE, 82.0, mode="猜测")
 
     def test_does_not_shift_when_subharmonic_absent(self) -> None:
         """没有低八度成分时不得乱改（防止把正确的高音拉低）。"""

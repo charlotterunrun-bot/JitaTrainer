@@ -35,6 +35,11 @@ class AnalyzerConfig:
     low_window: int = 8192
     #: 低于该频率的检测结果会尝试用长窗口复核
     low_band_hz: float = 220.0
+    #: 谐波校验模式（off / auto / presence）。
+    #: 由乐器配置档案按实测结果决定：默认 auto 只保留高频保守规则；
+    #: presence 额外启用低频"存在性"规则，仅适合低频响应差的设备
+    #: （换正常麦克风后会误把正确读数砍半，实测见 pitch_yin.harmonic_correct）。
+    harmonic_mode: str = "auto"
 
     @property
     def hop_ms(self) -> float:
@@ -66,14 +71,22 @@ class FrameAnalyzer:
         self.config = config or AnalyzerConfig()
         self.gate = gate or GateConfig()
         self.detector = detector or PitchDetector(
-            YinConfig(samplerate=self.config.samplerate, window=self.config.window)
+            YinConfig(
+                samplerate=self.config.samplerate,
+                window=self.config.window,
+                harmonic_mode=self.config.harmonic_mode,
+            )
         )
         self._onset = OnsetDetector(rise_db=self.gate.onset_rise_db)
         #: 低频段复核用的长窗口检测器
         self.low_detector: PitchDetector | None = None
         if self.config.low_enhance and self.config.low_window > self.config.window:
             self.low_detector = PitchDetector(
-                YinConfig(samplerate=self.config.samplerate, window=self.config.low_window)
+                YinConfig(
+                    samplerate=self.config.samplerate,
+                    window=self.config.low_window,
+                    harmonic_mode=self.config.harmonic_mode,
+                )
             )
         #: 整体检测偏差校正（音分）。由向导的试弹校准测得，用于补偿系统性偏差；
         #: 注意它**不**应用来掩盖琴本身没调准的问题。

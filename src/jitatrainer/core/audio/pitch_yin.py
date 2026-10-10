@@ -23,6 +23,9 @@ from ..theory.notes import cents_between, hz_to_midi, nearest_cents_offset, pitc
 #: 采样率缺省值
 DEFAULT_SAMPLERATE = 48000
 
+#: 谐波校验模式：off（不纠正）/ auto（默认，仅高频保守规则）/ presence（含低频存在性规则）
+HARMONIC_MODES: tuple[str, ...] = ("off", "auto", "presence")
+
 
 @dataclass(frozen=True, slots=True)
 class YinConfig:
@@ -34,6 +37,11 @@ class YinConfig:
     fmax: float = 1400.0
     threshold: float = 0.12
     confidence_min: float = 0.80
+    #: 谐波校验模式。默认 "auto"：只保留高频区的保守规则；
+    #: 低频区的"存在性"规则（presence）只适合低频响应差的麦克风，
+    #: 换正常麦克风后会误把正确读数砍半（实测见 harmonic_correct 文档）。
+    #: 由乐器配置档案按实测结果选择，见 core/instrument.py。
+    harmonic_mode: str = "auto"
     #: 谐波校验仅在 f0 不低于该值时启用
     harmonic_check_min_hz: float = 200.0
     #: f0/2 与 f0 至少相隔多少个频点才允许校验
@@ -144,6 +152,7 @@ def harmonic_correct(
     samplerate: int,
     hz: float,
     *,
+    mode: str = "auto",
     min_check_hz: float = 200.0,
     min_bin_sep: float = 4.0,
     low_max_hz: float = 420.0,
@@ -155,23 +164,36 @@ def harmonic_correct(
 ) -> tuple[float, bool]:
     """谐波校验：抑制 YIN 的"谐波锁定"误判。
 
-    **A. 低频/中频区的谐波锁定（真实录音实测发现）**
+    三种模式（由乐器配置档案选择，见 ``core/instrument.py``）：
 
-    麦克风低频响应差、或拨弦位置偏桥时，基频可能远弱于某个高次谐波。
-    2026-10-07 的真实录音里出现过两种：
+    ========== ================================================================
+    ``off``    不做任何频谱纠正，完全相信 YIN + 两级分析窗口
+    ``auto``   **默认**。只保留高频区的保守规则（B）；低频区的"存在性"规则关闭
+    ``presence`` 低频区"存在性"规则（A）+ 高频规则（B）。**为低频响应差的麦克风准备**
+    ========== ================================================================
 
-      - 第 6 弦：基频 78Hz 的幅度只有二次谐波 155Hz 的 **1/18** → YIN 报高八度；
-      - 第 5 弦：基频 107Hz 的幅度只有三次谐波 318Hz 的 **1/19** → YIN 报十二度。
+    为什么默认不再启用 A（2026-10-10 用新麦克风的实测结论）
+    --------------------------------------------------------
 
-    这类情况下候选基频（hz/2、hz/3）在频谱里**确实有峰，只是很弱**，
-    因此判据用"存在性"而不是"更强"，并要求：
+    A 的判据是"候选基频处存在谱峰即可向下修正"。实测发现它**无法与真实情况可靠区分**：
 
-      1. 候选基频落在吉他音域内（>= max(min_low_hz, fmin)）；
-      2. 候选处存在局部谱峰，幅度 > low_presence_ratio × 当前读数处幅度，
-         且 > low_floor_factor × 频带中位幅度（排除噪声里的偶发隆起）；
-      3. **候选基频的二次谐波处也有支持** —— 真正的低音才有这个特征，
-         这一条用于排除"随手把高音拉低"的误伤；
-      4. 多个候选都成立时取**最低**的那个。
+    ==================================== ============== ==============
+    场景                                  候选/读数     候选/频带中位
+    ==================================== ============== ==============
+    真锁定（弱基频 E2 被读成 E3）            2.6%           7.3×
+    真锁定（弱基频 A2 被读成 D#4）           5.3%          13.0×
+    **误纠正**（真实 E4 被砍成 E3）        **17~20%**    **7~9×**
+    ==================================== ============== ==============
+
+    也就是说，误纠正场景下的"低八度成分"反而**更强**——任何基于"存在性/强度"的
+    单帧判据都会把两者混为一谈。旧规则之所以在 M1 有效，是因为当时那支麦克风
+    的低频衰减极其严重（基频只有谐波的 1/18）；换成正常麦克风后，琴箱共振、
+    房间低频等都会在 hz/2 处留下能量，于是把正确读数砍半
+    （实测：录音3 第 1 弦 E4 329Hz → E3 164.6Hz，误差 1200 音分）。
+
+    **结论：八度歧义不应该靠猜频谱解决，而应该用乐器配置档案里的预期音高集来判定**
+    （调音时知道该弹哪根弦，练习时知道目标音）。A 规则作为"低频响应差的设备"的
+    可选补偿保留，由测量结果决定是否启用。
 
     **B. 高频区的"把二次谐波当基频"**
 
@@ -185,6 +207,10 @@ def harmonic_correct(
     """
     if hz <= 0:
         return hz, False
+    if mode == "off":
+        return hz, False
+    if mode not in HARMONIC_MODES:
+        raise ValueError(f"未知的谐波校验模式：{mode}（可选 {HARMONIC_MODES}）")
 
     # 补零到 4 倍窗口：不增加真实分辨率，但让谱峰定位精确得多
     n = 1 << int(math.ceil(math.log2(max(len(frame), 1) * 4)))
@@ -207,7 +233,9 @@ def harmonic_correct(
         return float(spectrum[local])
 
     # ---------------- A. 低频/中频区：按约数向下搜索真实基频 ----------------
-    if hz <= low_max_hz:
+    # 仅在 mode == "presence" 时启用：这是给"低频响应差的麦克风"的补偿，
+    # 单帧频谱无法区分"真锁定"与"琴箱共振/房间低频"，默认不启用（理由见函数文档）。
+    if hz <= low_max_hz and mode == "presence":
         energy_here = peak_at(hz)
         band = spectrum[max(1, int(60 / bin_hz)) : min(len(spectrum), int(1200 / bin_hz))]
         band_median = float(np.median(band)) if band.size else 0.0
@@ -218,6 +246,9 @@ def harmonic_correct(
             candidate = hz / divisor
             if candidate < min_candidate:
                 continue
+            # 候选与当前读数必须在频谱上分得开，否则短窗口的主瓣泄漏会被当成低八度成分
+            if (candidate / bin_hz) < min_bin_sep:
+                continue
             presence = peak_at(candidate)
             if presence <= 0.0:
                 continue
@@ -225,6 +256,15 @@ def harmonic_correct(
                 continue
             if presence < low_floor_factor * band_median:
                 continue
+            # 说明：这里检查的是 peak_at(candidate * 2)。当 divisor == 2 时，
+            # candidate * 2 恰好就是当前读数 hz 本身 —— 也就是说这条"二次谐波支持"
+            # 对 ÷2 而言是**自我满足**的，实际只起到"候选处有峰"的存在性判断作用。
+            #
+            # 我们**明知它不严谨**却保留原样，原因是：单帧频谱无法可靠区分
+            # "真锁定"与"琴箱共振/房间低频"（实测数据见函数文档的对照表，
+            # 误纠正场景的低八度成分反而更强）。既然换不掉，就把整条规则
+            # 降级为"按乐器配置启用"（mode="presence"），默认不开启。
+            # 只有实测确认低频响应差的设备，才会在配置档案里打开它。
             second = peak_at(candidate * 2.0)
             if second <= 0.0 or (energy_here > 0.0 and second < low_presence_ratio * energy_here):
                 continue
@@ -294,6 +334,7 @@ class PitchDetector:
             signal,
             cfg.samplerate,
             hz,
+            mode=cfg.harmonic_mode,
             min_check_hz=cfg.harmonic_check_min_hz,
             min_bin_sep=cfg.harmonic_min_bin_sep,
         )
